@@ -71,8 +71,8 @@ try {
       }
       if (held[id]) { held[id] = false; send(c, { type: 'control', seq: ++seq[id], held: false }); }
       const cue = jumpCue(c.state.game, id);
-      if (cue?.active && sent[id] !== cue.group) {
-        sent[id] = cue.group;
+      if (cue?.active && sent[id] !== cue.key) {
+        sent[id] = cue.key;
         send(c, { type: 'control', seq: ++seq[id], held: true });
         send(c, { type: 'control', seq: ++seq[id], held: false });
       }

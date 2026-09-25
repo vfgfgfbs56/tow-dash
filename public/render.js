@@ -1,4 +1,4 @@
-import { C, FLIGHT, speedAt, distanceAt, timeAtDistance, localColor, jumpCue, activeFlight, flightCorridor } from './engine.js';
+import { C, FLIGHT, speedAt, distanceAt, timeAtDistance, localColor, jumpCue, activeFlight, flightCorridor, trapHeight } from './engine.js';
 
 export class Renderer {
   constructor(canvas) {
@@ -37,6 +37,10 @@ export class Renderer {
     const phase = game?.phase, active = phase === 'running';
     let zoom = active ? Math.max(.48, .82 * Math.sqrt(C.START_SPEED / speedAt(game.elapsed))) : 1;
     if (active && (game.players.some(p => p.y > 215) || game.orbs.some(o => o.x > game.distance - 220 && o.x < game.distance + C.BASE_SPEED * speedAt(game.elapsed) * 2.1))) zoom = Math.min(zoom, .68);
+    if (active) for (const group of game.groups) {
+      if (group.action === 'stairs' && group.x + group.w > game.distance - 200 && group.x < game.distance + C.BASE_SPEED * speedAt(game.elapsed) * 2.6)
+        zoom = Math.min(zoom, h * .58 / (base * (group.h + 240)));
+    }
     this.zoom += (zoom - this.zoom) * Math.min(1, dt * 5);
     const s = base * this.zoom, floorY = h * .775, ceilingY = h * .225;
     const side = game?.roadSide ?? 1;
@@ -86,7 +90,7 @@ export class Renderer {
         for (const o of game.obstacles) {
           const x = ox + (o.x - game.distance) * s;
           if (x > w + 200 || x + o.w * s < -200) continue;
-          this.obstacle(o, x, 0, s, now);
+          this.obstacle(o, x, 0, s, now, game.elapsed);
         }
         for (const orb of game.orbs) {
           const x = ox + (orb.x - game.distance) * s;
@@ -109,7 +113,7 @@ export class Renderer {
           ctx.strokeStyle = '#00b5f1'; ctx.lineWidth = Math.max(1.5, 2 * markerScale);
           for (const lift of [11, 21]) {
             // Outside the road: the cube cannot cover its own timing cue.
-            const y = ground + side * lift * markerScale;
+            const y = ground - side * cue.height * s + side * lift * markerScale;
             ctx.beginPath(); ctx.moveTo(x - 8 * markerScale, y + side * 6 * markerScale);
             ctx.lineTo(x, y); ctx.lineTo(x + 8 * markerScale, y + side * 6 * markerScale); ctx.stroke();
           }
@@ -155,7 +159,7 @@ export class Renderer {
       const grow = Math.min(1, .15 + t * 2.1), color = localColor(p.id, self);
       const size = C.SIZE * s * grow;
       ctx.save(); ctx.translate(pos.x, pos.y);
-      const angle = p.y > 0 ? Math.max(0, (C.JUMP - p.vy) / C.GRAVITY) / FLIGHT * Math.PI : 0;
+      const angle = p.y > 0 && !p.grounded ? Math.max(0, (C.JUMP - p.vy) / C.GRAVITY) / FLIGHT * Math.PI : 0;
       ctx.rotate(side * angle + flipped * Math.PI);
       if (game && p.shieldUntil > game.elapsed) {
         ctx.globalAlpha = this.reduced ? .7 : .65 + Math.sin(now * 8) * .15;
@@ -327,7 +331,7 @@ export class Renderer {
     c.beginPath(); c.arc(x, y, r * (this.reduced ? 1.3 : 1.3 + Math.sin(now * 4) * .09), 0, Math.PI * 2); c.stroke();
     c.restore();
   }
-  obstacle(o, x, ground, s, now) {
+  obstacle(o, x, ground, s, now, elapsed = 0) {
     const c = this.ctx, w = o.w * s, h = o.h * s;
     c.strokeStyle = '#f2f2f5'; c.fillStyle = '#000'; c.lineWidth = Math.max(2, 5 * s); c.lineJoin = 'miter';
     if (o.kind === 'tower') {
@@ -342,14 +346,41 @@ export class Renderer {
       }
       c.fillStyle = '#c9ad5c'; c.fillRect(x + w * .43, ground - h * .42, Math.max(2, w * .14), Math.max(3, 7 * s));
     } else if (o.kind === 'fake') {
-      c.strokeStyle = '#c5c8ce';
-      c.beginPath(); c.moveTo(x + c.lineWidth / 2, ground - 2 * s); c.lineTo(x + w / 2, ground - h + c.lineWidth);
-      c.lineTo(x + w - c.lineWidth / 2, ground - 2 * s); c.stroke();
-      c.save(); c.setLineDash([Math.max(3, 7 * s), Math.max(2, 4 * s)]);
-      c.beginPath(); c.moveTo(x + c.lineWidth, ground - 2 * s); c.lineTo(x + w - c.lineWidth, ground - 2 * s); c.stroke(); c.restore();
-      const r = Math.max(2.5, 5 * s), yy = ground - h * .32;
-      c.lineWidth = Math.max(1, 1.5 * s); c.beginPath(); c.moveTo(x + w / 2, yy - r);
-      c.lineTo(x + w / 2 + r, yy); c.lineTo(x + w / 2, yy + r); c.lineTo(x + w / 2 - r, yy); c.closePath(); c.stroke();
+      const lift = trapHeight(o, elapsed) * s, tip = Math.min(90 * s, lift);
+      c.save(); c.strokeStyle = '#ff334e'; c.fillStyle = '#22080e'; c.lineWidth = Math.max(2, 3.5 * s);
+      if (lift > 2 * s) {
+        c.beginPath(); c.moveTo(x + c.lineWidth / 2, ground);
+        c.lineTo(x + c.lineWidth / 2, ground - lift + tip);
+        c.lineTo(x + w / 2, ground - lift);
+        c.lineTo(x + w - c.lineWidth / 2, ground - lift + tip);
+        c.lineTo(x + w - c.lineWidth / 2, ground); c.closePath(); c.fill(); c.stroke();
+        c.fillStyle = '#ff334e'; c.globalAlpha *= .6;
+        c.beginPath(); c.moveTo(x + w * .25, ground - lift + tip * .9);
+        c.lineTo(x + w / 2, ground - lift + 12 * s);
+        c.lineTo(x + w * .75, ground - lift + tip * .9); c.closePath(); c.fill();
+        c.globalAlpha /= .6;
+      }
+      c.fillStyle = '#3a0a15';
+      c.fillRect(x, ground - h, w, h);
+      c.strokeRect(x + c.lineWidth / 2, ground - h + c.lineWidth / 2, w - c.lineWidth, h - c.lineWidth);
+      c.fillStyle = '#ff334e';
+      for (const q of [.25, .5, .75]) c.fillRect(x + w * q - 3 * s, ground - h * .62, 6 * s, 5 * s);
+      c.restore();
+    } else if (o.kind === 'step') {
+      c.fillStyle = '#101317'; c.fillRect(x, ground - h, w, h);
+      c.strokeStyle = '#b8c7d0'; c.lineWidth = Math.max(1.5, 2.5 * s);
+      c.strokeRect(x + c.lineWidth / 2, ground - h + c.lineWidth / 2, w - c.lineWidth, h - c.lineWidth);
+      c.fillStyle = '#f0f6fa'; c.fillRect(x, ground - h, w, Math.max(2, 4 * s));
+      c.fillStyle = '#27313a';
+      for (let xx = x + 22 * s; xx < x + w - 12 * s; xx += 70 * s) c.fillRect(xx, ground - h + 14 * s, 22 * s, Math.max(1, 2 * s));
+    } else if (o.kind === 'stack') {
+      c.fillStyle = '#090a0c'; c.fillRect(x, ground - h, w, h);
+      for (let i = 0; i < 2; i++) {
+        const yy = ground - (i + 1) * h / 2;
+        c.strokeRect(x + c.lineWidth / 2, yy + c.lineWidth / 2, w - c.lineWidth, h / 2 - c.lineWidth);
+        const size = Math.min(w * .24, h * .12);
+        c.fillStyle = '#f2f2f5'; c.fillRect(x + w / 2 - size / 2, yy + h / 4 - size / 2, size, size);
+      }
     } else if (o.kind === 'spike' || o.kind === 'double') {
       const n = o.kind === 'double' ? 2 : 1;
       for (let i = 0; i < n; i++) {
