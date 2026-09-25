@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="theme-color" content="#000000">
+  <meta name="description" content="Дойди до финиша с прицепом. Кооперативный раннер на двоих в Telegram.">
+  <title>С ПРИЦЕПОМ — игра на двоих</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="/fonts/PressStart2P-Regular.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="stylesheet" href="/style.css">
+  <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <main id="stage" aria-label="С прицепом — игра на двоих">
+    <canvas id="game" tabindex="0" role="button" aria-label="Прыгнуть. Нажмите на экран или пробел."></canvas>
+    <header class="hud">
+      <div class="metric"><span>СКОРОСТЬ</span><strong id="speed">—</strong></div>
+      <div class="metric right"><span>ДО ФИНИША</span><strong id="time">—</strong></div>
+    </header>
+    <section id="panel" class="panel" aria-label="Меню игры">
+      <div class="panel-top"><span class="mini-mark"><i></i><b></b><i></i></span><span>ОДНА ТРАССА. ВЫ ВДВОЁМ.</span></div>
+      <h1>ДОЙДИ ДО ФИНИША<span>С ПРИЦЕПОМ</span></h1>
+      <div id="screen-home" class="screen">
+        <button class="primary" id="create"><span>СОЗДАТЬ КОМНАТУ</span><span aria-hidden="true">+</span></button>
+        <button class="secondary" id="open-join">ВОЙТИ В КОМНАТУ</button>
+        <div class="panel-bottom"><span><i class="blue-square"></i> ТЫ <i class="red-square"></i> ДРУГ</span><button class="text-button" id="practice" aria-label="Тренировка с напарником-ботом">ТРЕНИРОВКА С БОТОМ ↗</button></div>
+      </div>
+      <div id="screen-join" class="screen" hidden>
+        <p class="caption" id="code-label">ВВЕДИ КОД КОМНАТЫ</p>
+        <output id="room-code" aria-labelledby="code-label" aria-live="polite">————</output>
+        <div class="keypad" aria-label="Цифры кода"></div>
+        <div class="join-actions"><button class="text-button" data-home>НАЗАД</button><button class="text-button" id="clear-code">ОЧИСТИТЬ</button><button class="compact primary" id="join">ВОЙТИ →</button></div>
+      </div>
+      <div id="screen-wait" class="screen" hidden>
+        <p class="caption">КОД ВАШЕЙ КОМНАТЫ</p>
+        <output id="invite-code" class="invite-code" aria-label="Код комнаты">0000</output>
+        <p id="waiting-text" class="waiting-text">ЖДЁМ ДРУГА<span class="dots">...</span></p>
+        <div class="wait-actions"><button class="primary compact" id="share">ПРИГЛАСИТЬ ДРУГА ↗</button></div>
+        <button class="text-button back" data-home>В МЕНЮ</button>
+      </div>
+      <p id="error" role="alert" hidden></p>
+    </section>
+    <section id="center-message" class="center-message" aria-live="polite" hidden><p></p><strong></strong><small></small></section>
+    <section id="result" class="result" aria-live="polite" hidden>
+      <p id="result-eyebrow">ПОПРОБУЕМ ЕЩЁ?</p><h2 id="result-title">НЕ ДОБЕЖАЛИ</h2>
+      <p id="result-stats"></p><div><button id="again" class="primary compact">ЕЩЁ РАЗ</button><button data-home class="secondary compact">В МЕНЮ</button></div>
+      <small id="rematch-status"></small>
+    </section>
+    <div id="toast" role="status" hidden></div>
+  </main>
+  <aside id="rotate" hidden><div class="phone-icon" aria-hidden="true"></div><h2>ПОВЕРНИ ТЕЛЕФОН</h2><p>Эта трасса — в горизонтали.</p></aside>
+  <noscript>Для игры нужен JavaScript.</noscript>
+</body>
+</html>

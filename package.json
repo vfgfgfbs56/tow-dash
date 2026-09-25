@@ -1,0 +1,16 @@
+{
+  "name": "tow-dash-telegram",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev": "wrangler dev --ip 0.0.0.0 --port 8787",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "deploy": "wrangler deploy",
+    "test": "node --test tests/*.test.js",
+    "test:network": "node tests/network.mjs",
+    "preview:static": "node scripts/static-server.mjs"
+  },
+  "devDependencies": { "wrangler": "4.75.0" }
+}
