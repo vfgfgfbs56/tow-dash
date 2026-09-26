@@ -17,9 +17,15 @@ async function until(fn, timeout = 10000) {
   const start = Date.now(); while (!fn()) { if (Date.now() - start > timeout) throw new Error('Timed out'); await new Promise(r => setTimeout(r, 25)); }
 }
 assert.equal((await post('/api/rooms', { version: 1 })).status, 409);
-assert.equal((await (await fetch(base + '/api/config')).json()).version, C.VERSION);
-const a = await post('/api/rooms'); assert.equal(a.status, 200);
+const config = await (await fetch(base + '/api/config')).json();
+assert.equal(config.version, C.VERSION); assert.equal(config.levels.length, 6);
+const owner = crypto.randomUUID();
+assert.equal((await post('/api/progress', { guestId: owner })).body.highest, 1);
+assert.equal((await post('/api/rooms', { guestId: owner, level: 2 })).status, 403);
+const a = await post('/api/rooms', { guestId: owner, level: 1 }); assert.equal(a.status, 200);
+assert.equal(a.body.level, 1);
 const b = await post(`/api/rooms/${a.body.code}/join`); assert.equal(b.status, 200);
+assert.equal(b.body.level, 1);
 assert.equal((await post(`/api/rooms/${a.body.code}/join`)).status, 409);
 const missing = await post('/api/rooms/0000/join'); assert.equal(missing.status, 404);
 const p0 = client(a.body), p1 = client(b.body);
@@ -29,6 +35,8 @@ try {
   const send = (c, m) => c.ws.send(JSON.stringify({ version: C.VERSION, ...m }));
   send(p0, { type: 'ready' }); send(p1, { type: 'ready' });
   await until(() => p0.state?.game?.phase === 'countdown' && p1.state?.game);
+  assert.equal(p0.state.level, p1.state.level);
+  assert.equal(p0.state.game.level.id, 1);
   assert.equal(p0.state.game.seed, p1.state.game.seed);
   assert.equal(p0.messages.find(m => m.type === 'welcome').self, 0);
   assert.equal(p1.messages.find(m => m.type === 'welcome').self, 1);
@@ -79,7 +87,9 @@ try {
     }
   }, 12);
   try {
-    await until(() => replacement.state?.game?.flightActive === 0 && p1.state?.game?.flightActive === 0, 55000);
+    await until(() => (replacement.state?.game?.flightActive === 0 && p1.state?.game?.flightActive === 0)
+      || ['lost', 'aborted'].includes(replacement.state?.game?.phase), 65000);
+    assert.equal(replacement.state.game.phase, 'running', `network race ended at ${replacement.state.game.elapsed}s, deaths ${replacement.state.game.players.map(p => p.deaths)}`);
     assert.deepEqual(replacement.state.game.flights, p1.state.game.flights);
     assert.notEqual(replacement.state.game.players[0].flyLane, replacement.state.game.players[1].flyLane);
     await until(() => replacement.state.game.flightsCompleted === 1 && p1.state.game.flightsCompleted === 1, 15000);

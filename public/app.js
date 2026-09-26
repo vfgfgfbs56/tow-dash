@@ -1,6 +1,7 @@
 import { C, createGame, step, jump, setControl, activeFlight, botFlightHeld, botWantsJump, speedAt } from './engine.js';
 import { Renderer } from './render.js';
 import { GameFeedback, respawnSeconds } from './feedback.js';
+import { validateLevels } from './levels.js';
 
 const $ = id => document.getElementById(id);
 const renderer = new Renderer($('game'));
@@ -10,7 +11,36 @@ let game = null, mode = 'menu', self = 0, socket = null, room = null, seq = 0;
 let remote = null, pause = null, accumulator = 0, reconnects = 0, reconnectTimer = null;
 let lastFrame = performance.now(), lastState = 0, lastPhase = '', toastTimer;
 let pending = [], botUsername = '', lastReady = null, enteredCode = '';
+let levels = validateLevels(JSON.parse($('level-config').textContent)), highest = 1, selectedLevel = 1;
+let recordedWin = null;
+let guestId;
+try { guestId = localStorage.getItem('tow-guest-id') || crypto.randomUUID(); localStorage.setItem('tow-guest-id', guestId); }
+catch { guestId = crypto.randomUUID(); }
 const controls = new Set();
+const selected = () => levels[selectedLevel - 1] || levels[0];
+function renderLevels() {
+  $('levels').replaceChildren(...levels.map(level => {
+    const button = document.createElement('button');
+    button.className = `level-card${selectedLevel === level.id ? ' selected' : ''}`;
+    button.type = 'button'; button.disabled = level.id > highest;
+    button.setAttribute('aria-pressed', String(selectedLevel === level.id));
+    button.setAttribute('aria-label', `Уровень ${level.id}, скорость ${level.startSpeed}–${level.endSpeed}, ${level.duration / 60} минут${level.id > highest ? ', закрыт' : ''}`);
+    const title = document.createElement('b'), stats = document.createElement('span');
+    title.textContent = `LVL ${level.id}${level.id > highest ? ' · ЗАКР.' : ''}`;
+    stats.textContent = `×${level.startSpeed}→${level.endSpeed} · ${level.duration / 60} МИН`;
+    button.append(title, stats);
+    button.onclick = () => { selectedLevel = level.id; renderLevels(); };
+    return button;
+  }));
+}
+async function loadProgress() {
+  try {
+    const data = await request('/api/progress', {});
+    highest = Math.max(1, Math.min(levels.length, data.highest || 1));
+    if (selectedLevel > highest) selectedLevel = highest;
+    renderLevels();
+  } catch { renderLevels(); }
+}
 let inputHeld = false;
 const cryptoSeed = () => crypto.getRandomValues(new Uint32Array(1))[0];
 const setText = (el, text) => { if (el.textContent !== text) el.textContent = text; };
@@ -30,14 +60,17 @@ function disconnect(leave = false) {
   room = null; sessionSave(); remote = null; pause = null; pending = [];
 }
 function home() {
+  const finished = game?.phase === 'won';
   disconnect(true); game = null; mode = 'menu'; lastPhase = ''; renderer.rope = 1;
   screen('home');
+  loadProgress();
+  if (finished) setTimeout(loadProgress, 700);
   history.replaceState({}, '', location.pathname);
 }
 async function request(path, body) {
   const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 12000);
   try {
-    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, version: C.VERSION, initData: tg?.initData || '' }), signal: controller.signal });
+    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, guestId, version: C.VERSION, initData: tg?.initData || '' }), signal: controller.signal });
     let data; try { data = await r.json(); } catch { throw new Error('Комнаты недоступны. Запустите проект на Cloudflare или через npm run dev. Тренировка работает без подключения.'); }
     if (!r.ok) throw new Error(data.error || 'Не удалось подключиться.');
     return data;
@@ -52,6 +85,7 @@ function connect(data) {
   if (socket) { socket.onclose = null; socket.close(); }
   room = data; self = data.self; seq = 0; pending = []; lastReady = null; sessionSave();
   mode = 'online'; screen('wait'); $('invite-code').textContent = data.code;
+  setText($('waiting-level'), `УРОВЕНЬ ${data.level || 1} · ОДИНАКОВЫЙ ДЛЯ ОБОИХ`);
   setText($('waiting-text'), 'ПОДКЛЮЧАЕМСЯ...');
   const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/rooms/${data.code}/ws`, ['tow-dash', `session.${data.token}`]);
   socket = ws;
@@ -66,6 +100,9 @@ function connect(data) {
       if (m.game) {
         if (m.game.version !== C.VERSION) { home(); error('Обновите игру на обоих устройствах.'); return; }
         game = m.game;
+        if (m.progressSaved && recordedWin !== `${m.code}:${game.seed}`) {
+          recordedWin = `${m.code}:${game.seed}`; loadProgress();
+        }
         feedback.consume(game, self, !document.hidden);
         pending = pending.filter(command => command.seq > (m.ack?.[self] || 0));
         if (!pause) for (const command of pending) setControl(game, self, command.held);
@@ -111,7 +148,7 @@ function orientation(force = false) {
 }
 function practice() {
   disconnect(true); mode = 'practice'; self = 0;
-  game = createGame(cryptoSeed(), cryptoSeed() % 2); accumulator = 0;
+  game = createGame(cryptoSeed(), cryptoSeed() % 2, selected()); accumulator = 0;
   lastPhase = ''; $('panel').hidden = true; $('result').hidden = true;
   $('game').focus({ preventScroll: true });
 }
@@ -141,8 +178,8 @@ function center(label, value, note = '', className = '') {
   setText(el.querySelector('p'), label); setText(el.querySelector('strong'), value); setText(el.querySelector('small'), note);
 }
 function updateUI() {
-  setText($('speed'), game && game.phase !== 'countdown' ? `×${speedAt(game.elapsed).toFixed(1)}` : '—');
-  setText($('time'), game && game.phase !== 'countdown' ? clock(Math.max(0, C.DURATION - game.elapsed)) : '—');
+  setText($('speed'), game && game.phase !== 'countdown' ? `×${speedAt(game.elapsed, game.level).toFixed(1)}` : '—');
+  setText($('time'), game && game.phase !== 'countdown' ? clock(Math.max(0, game.level.duration - game.elapsed)) : '—');
   if (!game) { $('center-message').hidden = true; return; }
   if (pause && ['running', 'countdown'].includes(game.phase)) {
     center('ЖДЁМ СОЕДИНЕНИЕ', String(Math.max(0, Math.ceil((pause.until - Date.now()) / 1000))), 'ВЕРНИТЕСЬ В ИГРУ · ЭКРАН ГОРИЗОНТАЛЬНО', 'paused'); return;
@@ -160,8 +197,8 @@ function updateUI() {
     releaseControls();
     $('center-message').hidden = true; $('result').hidden = false;
     setText($('result-title'), game.phase === 'won' ? 'ФИНИШ!' : game.phase === 'aborted' ? 'СВЯЗЬ ПРЕРВАНА' : 'НЕ ДОБЕЖАЛИ');
-    setText($('result-eyebrow'), game.phase === 'won' ? 'ШЕСТЬ МИНУТ. ОДНА КОМАНДА.' : game.phase === 'aborted' ? 'ПОПРОБУЙТЕ ПОДКЛЮЧИТЬСЯ СНОВА' : 'ОБА ВЫБЫЛИ. НОВАЯ ПОПЫТКА?');
-    setText($('result-stats'), `${clock(game.elapsed)} / ${clock(C.DURATION)} · ПРЫЖКОВ: ${game.players.reduce((n, p) => n + p.jumps, 0)}`);
+    setText($('result-eyebrow'), game.phase === 'won' ? mode === 'practice' ? 'ТРЕНИРОВКА · ПРОГРЕСС ОТКРЫВАЕТСЯ В КОМНАТЕ' : `УРОВЕНЬ ${game.level.id} ПРОЙДЕН · ОДНА КОМАНДА` : game.phase === 'aborted' ? 'ПОПРОБУЙТЕ ПОДКЛЮЧИТЬСЯ СНОВА' : 'ОБА ВЫБЫЛИ. НОВАЯ ПОПЫТКА?');
+    setText($('result-stats'), `${clock(game.elapsed)} / ${clock(game.level.duration)} · ПРЫЖКОВ: ${game.players.reduce((n, p) => n + p.jumps, 0)}`);
     const asked = remote?.players?.[self]?.rematch;
     $('again').disabled = mode === 'online' && !!asked;
     setText($('rematch-status'), asked ? 'ЖДЁМ, КОГДА ДРУГ НАЖМЁТ «ЕЩЁ РАЗ»' : remote?.players?.some(p => p.rematch) ? 'ДРУГ ГОТОВ К НОВОЙ ПОПЫТКЕ' : '');
@@ -191,7 +228,7 @@ function frame(now) {
 function invitation() {
   return botUsername ? `https://t.me/${botUsername}?startapp=room_${room.code}` : `${location.origin}/?room=${room.code}`;
 }
-$('create').addEventListener('click', () => { fullscreen(); busy($('create'), async () => { disconnect(true); game = null; connect(await request('/api/rooms', {})); }); });
+$('create').addEventListener('click', () => { fullscreen(); busy($('create'), async () => { disconnect(true); game = null; connect(await request('/api/rooms', { level: selectedLevel })); }); });
 $('open-join').addEventListener('click', () => screen('join'));
 function setCode(value) { enteredCode = value.replace(/\D/g, '').slice(0, 4); $('room-code').textContent = enteredCode.padEnd(4, '—'); }
 for (let n = 0; n <= 9; n++) { const b = document.createElement('button'); b.textContent = n; b.setAttribute('aria-label', `Цифра ${n}`); b.onclick = () => setCode(enteredCode + n); document.querySelector('.keypad').append(b); }
@@ -236,7 +273,7 @@ for (const event of ['copy', 'cut', 'paste', 'selectstart', 'contextmenu', 'drag
 for (const event of ['gesturestart', 'gesturechange', 'gestureend'])
   document.addEventListener(event, e => e.preventDefault(), { passive: false });
 document.addEventListener('touchstart', e => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
-document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+document.addEventListener('touchmove', e => { if (!e.target.closest('.panel')) e.preventDefault(); }, { passive: false });
 document.addEventListener('dblclick', e => e.preventDefault());
 document.addEventListener('wheel', e => { if (e.ctrlKey || e.metaKey) e.preventDefault(); }, { passive: false });
 addEventListener('resize', () => orientation()); document.addEventListener('visibilitychange', () => orientation(true));
@@ -251,7 +288,11 @@ try {
   };
   tg?.onEvent('safeAreaChanged', inset); tg?.onEvent('contentSafeAreaChanged', inset); inset();
 } catch {}
-fetch('/api/config').then(r => r.json()).then(c => botUsername = c.botUsername || '').catch(() => {});
+renderLevels(); loadProgress();
+fetch('/api/config').then(r => r.json()).then(c => {
+  botUsername = c.botUsername || '';
+  if (c.levels) { levels = validateLevels(c.levels); highest = Math.min(highest, levels.length); renderLevels(); }
+}).catch(() => {});
 const start = tg?.initDataUnsafe?.start_param || new URLSearchParams(location.search).get('tgWebAppStartParam') || '';
 const invite = new URLSearchParams(location.search).get('room') || start.replace(/^room_/, '');
 if (/^\d{4}$/.test(invite)) { screen('join'); setCode(invite); }

@@ -1,6 +1,7 @@
 // Shared deterministic, fixed-step simulation. Cloudflare is authoritative.
+import { DEFAULT_LEVEL } from './levels.js';
 export const C = Object.freeze({
-  VERSION: 7, DT: 1 / 120, DURATION: 360, COUNTDOWN: 5, RESPAWN: 6,
+  VERSION: 8, DT: 1 / 120, DURATION: 360, COUNTDOWN: 5, RESPAWN: 6,
   SIZE: 64, HIT_HALF: 26, GRAVITY: 2800, JUMP: 1080,
   BASE_SPEED: 400, START_SPEED: 2, SPEED_STEP: 0.1,
   SPEED_EVERY: 10, SEPARATION: 172, SHIELD: 1.25,
@@ -14,20 +15,23 @@ export const C = Object.freeze({
   BULLET_LIFE: 1.35, BOSS_SHOTS: 16, SHOT_INTERVAL: .9,
 });
 export const FLIGHT = 2 * C.JUMP / C.GRAVITY;
-export function speedAt(t) {
-  return Math.round((C.START_SPEED + Math.floor(Math.max(0, Math.min(t, C.DURATION - 1e-7)) / C.SPEED_EVERY) * C.SPEED_STEP) * 10) / 10;
+export function speedAt(t, level = DEFAULT_LEVEL) {
+  const steps = level.duration / C.SPEED_EVERY - 1;
+  const index = Math.floor(Math.max(0, Math.min(t, level.duration - 1e-7)) / C.SPEED_EVERY);
+  return level.startSpeed + (level.endSpeed - level.startSpeed) * index / steps;
 }
-export function distanceAt(t) {
-  t = Math.max(0, Math.min(C.DURATION, t));
+export function distanceAt(t, level = DEFAULT_LEVEL) {
+  t = Math.max(0, Math.min(level.duration, t));
   const steps = Math.floor(t / C.SPEED_EVERY), rest = t - steps * C.SPEED_EVERY;
-  return C.BASE_SPEED * (C.SPEED_EVERY * (steps * C.START_SPEED + C.SPEED_STEP * steps * (steps - 1) / 2) + rest * (C.START_SPEED + steps * C.SPEED_STEP));
+  const increment = (level.endSpeed - level.startSpeed) / (level.duration / C.SPEED_EVERY - 1);
+  return C.BASE_SPEED * (C.SPEED_EVERY * (steps * level.startSpeed + increment * steps * (steps - 1) / 2) + rest * (level.startSpeed + steps * increment));
 }
-export function timeAtDistance(x) {
+export function timeAtDistance(x, level = DEFAULT_LEVEL) {
   if (x <= 0) return 0;
-  let lo = 0, hi = C.DURATION + 1;
+  let lo = 0, hi = level.duration + 1;
   for (let i = 0; i < 28; i++) {
     const m = (lo + hi) / 2;
-    if (distanceAt(m) < x) lo = m; else hi = m;
+    if (distanceAt(m, level) < x) lo = m; else hi = m;
   }
   return (lo + hi) / 2;
 }
@@ -63,7 +67,7 @@ export function worldY(g, p, floor = 0, ceiling = -400) {
 export function worldGravity(g) { return g.roadSide * C.GRAVITY; }
 export function activeFlight(g) { return g.flightActive >= 0 ? g.flights[g.flightActive] : null; }
 export function flightProgress(f, elapsed, offset = 0) {
-  return timeAtDistance(distanceAt(elapsed) + offset) - f.start;
+  return timeAtDistance(distanceAt(elapsed, f.level) + offset, f.level) - f.start;
 }
 // Independent upper/lower corridors, in a 1000-unit vertical playfield.
 // Every wall edge used by the renderer is also used by collision detection.
@@ -111,9 +115,12 @@ export function verifyFlight(f, offset, lane, controlEvery = 1) {
   return clearance;
 }
 export function makeFlight(g, minute) {
-  const start = Math.round((minute * 60 + 10 + random(g) * 32) / C.DT) * C.DT;
+  // Short four-minute races need room for three bosses after minute two.
+  const shortRace = g.level.duration <= 240 && minute >= 2;
+  const flightWindow = shortRace ? 3 : 32;
+  const start = Math.round((minute * 60 + (shortRace && minute === 3 ? 23 : 10) + random(g) * flightWindow) / C.DT) * C.DT;
   const top = random(g) < .5 ? 0 : 1;
-  const f = { id: minute, start, end: start + C.FLY_DURATION, lanes: [top, 1 - top], paths: [] };
+  const f = { id: minute, start, end: start + C.FLY_DURATION, level: g.level, lanes: [top, 1 - top], paths: [] };
   for (let lane = 0; lane < 2; lane++) {
     const base = lane ? 750 : 250;
     const points = [{ t: -1, y: base, half: 126 }, { t: 1.25, y: base, half: 118 }];
@@ -146,14 +153,14 @@ export function makeFlight(g, minute) {
   return f;
 }
 export function bulletX(b, t) {
-  const v = C.BASE_SPEED * speedAt(b.at);
-  return distanceAt(b.at) + C.SEPARATION + v * 1.25 - v * b.factor * Math.max(0, t - b.at);
+  const v = C.BASE_SPEED * speedAt(b.at, b.level);
+  return distanceAt(b.at, b.level) + C.SEPARATION + v * 1.25 - v * b.factor * Math.max(0, t - b.at);
 }
 export function bulletImpact(b, offset) {
   let lo = b.at, hi = b.at + 3;
   for (let n = 0; n < 28; n++) {
     const mid = (lo + hi) / 2;
-    if (bulletX(b, mid) - distanceAt(mid) - offset > 0) lo = mid; else hi = mid;
+    if (bulletX(b, mid) - distanceAt(mid, b.level) - offset > 0) lo = mid; else hi = mid;
   }
   return (lo + hi) / 2;
 }
@@ -166,25 +173,34 @@ export function bulletHits(x, y, b, t) {
 export function activeBoss(g) { return g.bosses.find(b => g.elapsed >= b.start && g.elapsed < b.end) || null; }
 function makeBosses(g) {
   const bosses = [];
+  const shortStarts = g.level.duration <= 240 ? (() => {
+    const first = g.flights[2].end + C.BOSS_BEFORE + .05 + random(g);
+    return [first, first + C.BOSS_DURATION + C.BOSS_AFTER + random(g), g.flights[3].end + C.BOSS_BEFORE + .05 + random(g)];
+  })() : null;
   for (let i = 0; i < 3; i++) {
-    let start = null;
+    let start = shortStarts ? Math.round(shortStarts[i] / C.DT) * C.DT : null;
+    if (shortStarts && (start + C.BOSS_DURATION > g.level.duration
+      || g.flights.some(f => start < f.end + C.BOSS_BEFORE && start + C.BOSS_DURATION > f.start - 3.2)))
+      throw new Error('No room for three boss encounters');
+    if (!shortStarts) {
     for (let n = 0; n < 180; n++) {
-      const t = Math.round((123 + random(g) * 213) / C.DT) * C.DT;
+      const t = Math.round((123 + random(g) * (g.level.duration - 147)) / C.DT) * C.DT;
       if (g.flights.some(f => t < f.end + 1.5 && t + C.BOSS_DURATION > f.start - 3.2)) continue;
       if (bosses.some(b => t < b.end + 3.2 && t + C.BOSS_DURATION > b.start - 3.2)) continue;
       start = t; break;
     }
     if (start === null) {
-      for (let t = 121; t < 341; t += .25) {
+      for (let t = 121; t < g.level.duration - 19; t += .25) {
         if (g.flights.some(f => t < f.end + 1.5 && t + C.BOSS_DURATION > f.start - 3.2)) continue;
         if (bosses.some(b => t < b.end + 3.2 && t + C.BOSS_DURATION > b.start - 3.2)) continue;
         start = Math.round(t / C.DT) * C.DT; break;
       }
     }
+    }
     if (start === null) throw new Error('No room for three boss encounters');
     const boss = { id: i, start, end: start + C.BOSS_DURATION, remnantAdded: false, shots: [] };
     for (let n = 0; n < C.BOSS_SHOTS; n++) {
-      const shot = { id: n, at: start + .8 + n * C.SHOT_INTERVAL,
+      const shot = { id: n, at: start + .8 + n * C.SHOT_INTERVAL, level: g.level,
         y: n % 2 ? 300 : 58 + random(g) * 10, r: 11 + random(g) * 3,
         factor: .2 + random(g) * .48 };
       shot.cues = [0, C.SEPARATION].map(offset => {
@@ -195,7 +211,7 @@ function makeBosses(g) {
         const cue = shot.cues[slot];
         for (let launch = cue.earliest - C.DT; launch <= cue.latest + C.DT; launch += C.DT)
           for (let t = launch; t < launch + FLIGHT; t += C.DT)
-            if (bulletHits(distanceAt(t) + offset, heightAfter(t - launch), shot, t)) throw new Error('Boss bullet window not safe');
+            if (bulletHits(distanceAt(t, g.level) + offset, heightAfter(t - launch), shot, t)) throw new Error('Boss bullet window not safe');
       }
       boss.shots.push(shot);
     }
@@ -203,9 +219,9 @@ function makeBosses(g) {
   }
   return bosses.sort((a, b) => a.start - b.start);
 }
-export function createGame(seed = 1, leader = 0) {
+export function createGame(seed = 1, leader = 0, level = DEFAULT_LEVEL) {
   const g = {
-    version: C.VERSION, seed: seed >>> 0, rng: (seed >>> 0) || 1, leader,
+    version: C.VERSION, level: { ...level }, seed: seed >>> 0, rng: (seed >>> 0) || 1, leader,
     phase: 'countdown', countdown: C.COUNTDOWN,
     tick: 0, elapsed: 0, distance: 0, obstacles: [], groups: [], orbs: [],
     nextAt: 2.8, roadReady: [0, 0], obstacleId: 0, groupId: 0, eventId: 0, events: [],
@@ -221,9 +237,9 @@ export function createGame(seed = 1, leader = 0) {
       spawnAssist: false, flyAssistHeld: false, respawnHoldUntil: -1,
     })),
   };
-  for (let minute = 0; minute < 6; minute++) g.flights.push(makeFlight(g, minute));
+  for (let minute = 0; minute < level.duration / 60; minute++) g.flights.push(makeFlight(g, minute));
   g.bosses = makeBosses(g);
-  const flipFree = t => t >= 2 && t + C.FLIP_DURATION < C.DURATION - 2
+  const flipFree = t => t >= 2 && t + C.FLIP_DURATION < g.level.duration - 2
     && g.flights.every(f => t >= f.end + 1.5 || t + C.FLIP_DURATION <= f.start - 1.5)
     && g.bosses.every(b => t >= b.end + 3.2 || t + C.FLIP_DURATION <= b.start - 1.5)
     && g.flips.every(other => Math.abs(t - other) > C.FLIP_DURATION + 3);
@@ -234,7 +250,7 @@ export function createGame(seed = 1, leader = 0) {
     if (t !== null) g.flips.push(Math.round(t / C.DT) * C.DT);
   }
   let flipTime = 20 + random(g) * 10;
-  while (flipTime < C.DURATION - 6) {
+  while (flipTime < g.level.duration - 6) {
     if (flipFree(flipTime))
       g.flips.push(Math.round(flipTime * 120) / 120);
     flipTime += 26 + random(g) * 10;
@@ -309,8 +325,8 @@ function addBossRemnants(g) {
     if (boss.remnantAdded || g.elapsed + 6 < boss.end) continue;
     const at = boss.end + 1.9, w = 105, h = 90;
     const o = { id: ++g.obstacleId, group: g.groupId + 1, kind: 'remnant', boss: boss.id,
-      x: distanceAt(at) + C.SEPARATION - w / 2, w, h };
-    const proof = [safeWindow(o, 0), safeWindow(o, C.SEPARATION)];
+      x: distanceAt(at, g.level) + C.SEPARATION - w / 2, w, h };
+    const proof = [safeWindow(o, 0, g.level), safeWindow(o, C.SEPARATION, g.level)];
     if (!proof.every(p => p && p.width >= .16)) throw new Error('Boss remnant has no jump window');
     const cues = proof.map(p => ({ earliest: p.earliest, latest: p.latest, at: p.middle }));
     g.groups.push({ id: ++g.groupId, action: 'jump', at, tier: difficultyAt(at).tier,
@@ -322,14 +338,14 @@ function addBossRemnants(g) {
 }
 // Find a *continuous* window of jump timings for BOTH positions. Uses exact
 // speed transitions and the same conservative hitbox, sampled at 120 Hz.
-export function safeWindow(o, offset) {
-  const centerAt = timeAtDistance(o.x + o.w / 2 - offset);
+export function safeWindow(o, offset, level = DEFAULT_LEVEL) {
+  const centerAt = timeAtDistance(o.x + o.w / 2 - offset, level);
   let first = null, last = null, runStart = null, best = 0;
   for (let lead = .12; lead <= FLIGHT; lead += C.DT) {
     const launch = centerAt - lead;
     let ok = launch >= 0;
     for (let dt = 0; ok && dt <= FLIGHT + .1; dt += C.DT) {
-      const x = distanceAt(launch + dt) + offset;
+      const x = distanceAt(launch + dt, level) + offset;
       // 10px extra vertical clearance + 1 physics step of integration error.
       if (hits(x, heightAfter(dt) - 16, o)) ok = false;
     }
@@ -344,23 +360,23 @@ export function safeWindow(o, offset) {
 }
 export function makeGroup(g, at) {
   const d = difficultyAt(at);
-  const v = C.BASE_SPEED * speedAt(at);
+  const v = C.BASE_SPEED * speedAt(at, g.level);
   const count = d.count[0] + Math.floor(random(g) * (d.count[1] - d.count[0] + 1));
   const width = Math.min(760, v * (.23 + d.tier * .02 + random(g) * .07) - C.HIT_HALF * 2);
   const group = { id: g.groupId + 1, action: 'jump', at, tier: d.tier, count,
-    x: distanceAt(at) + C.SEPARATION - width / 2,
+    x: distanceAt(at, g.level) + C.SEPARATION - width / 2,
     w: width, h: d.height[0] + random(g) * (d.height[1] - d.height[0]) };
   let proof;
   for (let i = 0; i < 12; i++) {
-    proof = [safeWindow(group, 0), safeWindow(group, C.SEPARATION)];
+    proof = [safeWindow(group, 0, g.level), safeWindow(group, C.SEPARATION, g.level)];
     if (proof.every(p => p && p.width >= d.window)) break;
     const center = group.x + group.w / 2;
     group.w *= .9; group.h *= .92; group.x = center - group.w / 2;
   }
   if (!proof.every(p => p && p.width >= d.window)) return null;
   // Reserve the entire encounter, for BOTH players, outside gravity gates.
-  const enter = timeAtDistance(group.x - C.SEPARATION - C.HIT_HALF);
-  const leave = timeAtDistance(group.x + group.w + C.HIT_HALF);
+  const enter = timeAtDistance(group.x - C.SEPARATION - C.HIT_HALF, g.level);
+  const leave = timeAtDistance(group.x + group.w + C.HIT_HALF, g.level);
   if (!roadAllowed(g, enter, leave)) return null;
   group.cues = proof.map(p => ({ earliest: p.earliest, latest: p.latest, at: p.middle }));
   // Some clusters have a three-cube gap between individual figures. They are
@@ -383,13 +399,13 @@ export function makeGroup(g, at) {
   g.groupId++;
   return { group, parts };
 }
-function stairLanding(parts, index, offset, launch, fromHeight, orbs, expectedOrb) {
+function stairLanding(parts, index, offset, launch, fromHeight, orbs, expectedOrb, level) {
   const p = { y: fromHeight, vy: 0, grounded: true };
-  if (!supported(p, distanceAt(launch) + offset, parts)) return null;
+  if (!supported(p, distanceAt(launch, level) + offset, parts)) return null;
   p.vy = C.JUMP; p.grounded = false;
   let boosted = false;
   for (let n = 1; n < 235; n++) {
-    const t = launch + n * C.DT, x = distanceAt(t) + offset;
+    const t = launch + n * C.DT, x = distanceAt(t, level) + offset;
     moveRunner(p, x, parts);
     for (const orb of orbs) if (touchesOrb(x, p.y, { ...orb, r: orb.r - 5 })) {
       if (orb.id !== expectedOrb?.id) return null;
@@ -427,8 +443,8 @@ export function makeStairs(g, at) {
     const spans = height.map((_h, i) => i === peak ? .32 : .79);
     const pillars = times.map((t, i) => ({
       id: g.obstacleId + i + 1, group: g.groupId + 1, kind: 'step',
-      x: distanceAt(at + t) + C.SEPARATION,
-      w: Math.max(C.SIZE, Math.round((distanceAt(at + t + spans[i]) - distanceAt(at + t)) / C.SIZE) * C.SIZE),
+      x: distanceAt(at + t, g.level) + C.SEPARATION,
+      w: Math.max(C.SIZE, Math.round((distanceAt(at + t + spans[i], g.level) - distanceAt(at + t, g.level)) / C.SIZE) * C.SIZE),
       h: height[i],
     }));
     const parts = [...pillars];
@@ -442,23 +458,23 @@ export function makeStairs(g, at) {
     for (const [stageIndex, i] of landable.entries()) {
       const prior = stageIndex ? landable[stageIndex - 1] : -1;
       const fromHeight = prior < 0 ? 0 : pillars[prior].h;
-      const launchX = prior < 0 ? null : distanceAt(at + times[prior] + .48) + C.SEPARATION;
+      const launchX = prior < 0 ? null : distanceAt(at + times[prior] + .48, g.level) + C.SEPARATION;
       let orb = null;
       if (boosted.has(i)) {
         orb = { id: `stair-${g.groupId + 1}-${i}`, group: g.groupId + 1,
-          x: distanceAt(at + times[prior] + .64) + C.SEPARATION,
+          x: distanceAt(at + times[prior] + .64, g.level) + C.SEPARATION,
           y: fromHeight + 150, r: C.ORB_RADIUS, power: i === peak + 1 ? C.BOOST : 1280 };
         orbs.push(orb);
       }
       const cues = [];
       for (const [slot, offset] of [0, C.SEPARATION].entries()) {
-        const middle = prior < 0 ? timeAtDistance(pillars[0].x - C.HIT_HALF - offset) - .39
-          : timeAtDistance(launchX - offset);
+        const middle = prior < 0 ? timeAtDistance(pillars[0].x - C.HIT_HALF - offset, g.level) - .39
+          : timeAtDistance(launchX - offset, g.level);
         const cue = { earliest: middle - .06, latest: middle + .06, at: middle };
         if (cue.earliest < lastLand[slot] + .035) { valid = false; break; }
         let latestLand = 0;
         for (let t = cue.earliest - C.DT; t <= cue.latest + C.DT * 1.01; t += C.DT) {
-          const land = stairLanding(parts, i, offset, t, fromHeight, orbs, orb);
+          const land = stairLanding(parts, i, offset, t, fromHeight, orbs, orb, g.level);
           if (land === null) { valid = false; break; }
           latestLand = Math.max(latestLand, land);
         }
@@ -467,7 +483,7 @@ export function makeStairs(g, at) {
       }
       if (!valid) break;
       if (orb) {
-        orb.launchXs = cues.map((cue, slot) => distanceAt(cue.at) + [0, C.SEPARATION][slot]);
+        orb.launchXs = cues.map((cue, slot) => distanceAt(cue.at, g.level) + [0, C.SEPARATION][slot]);
         orb.launchHeight = fromHeight;
       }
       stages.push({ index: stageIndex, pillar: i, fromHeight, height: pillars[i].h,
@@ -475,7 +491,7 @@ export function makeStairs(g, at) {
     }
     if (!valid) continue;
     const last = pillars[count - 1];
-    const ends = [0, C.SEPARATION].map(offset => timeAtDistance(last.x + last.w + C.HIT_HALF - offset) + Math.sqrt(2 * last.h / C.GRAVITY) + .06);
+    const ends = [0, C.SEPARATION].map(offset => timeAtDistance(last.x + last.w + C.HIT_HALF - offset, g.level) + Math.sqrt(2 * last.h / C.GRAVITY) + .06);
     const starts = stages[0].cues.map(c => c.earliest);
     if (!roadAllowed(g, Math.min(...starts), Math.max(...ends))) continue;
     const group = { id: ++g.groupId, action: 'stairs', at, tier, count: parts.length, x: pillars[0].x,
@@ -488,14 +504,14 @@ export function makeStairs(g, at) {
 }
 // Simulate the exact impulse/circle contact used in step(). A single ordinary
 // jump cannot clear the tower: its height exceeds the unboosted jump apex.
-export function boostWindow(tower, orb, offset) {
-  const at = timeAtDistance(orb.x - offset);
+export function boostWindow(tower, orb, offset, level = DEFAULT_LEVEL) {
+  const at = timeAtDistance(orb.x - offset, level);
   let first = null, last = null, run = null, best = 0;
   for (let lead = .13; lead <= .66; lead += C.DT) {
     const launch = at - lead, p = { y: 0, vy: C.JUMP };
     let boosted = false, ok = launch >= 0, landed = false;
     for (let n = 1; ok && n <= 240; n++) {
-      const t = launch + n * C.DT, x = distanceAt(t) + offset;
+      const t = launch + n * C.DT, x = distanceAt(t, level) + offset;
       integrateJump(p);
       // Slightly smaller orb and taller tower give a safety margin.
       if (!boosted && touchesOrb(x, p.y, { ...orb, r: orb.r - 5 })) { boosted = true; p.vy = C.BOOST; }
@@ -511,44 +527,44 @@ export function boostWindow(tower, orb, offset) {
   return first === null ? null : { earliest: first, latest: last, width: best, middle: (first + last) / 2 };
 }
 export function makeBoostGroup(g, at, variant) {
-  const tier = difficultyAt(at).tier, v = C.BASE_SPEED * speedAt(at);
+  const tier = difficultyAt(at).tier, v = C.BASE_SPEED * speedAt(at, g.level);
   const kind = variant || (random(g) < .55 ? 'stack' : 'tower');
   const w = kind === 'stack' ? 124 + random(g) * 24 : 66 + random(g) * 24;
   const h = 280 + tier * 6 + random(g) * 14;
-  const tower = { id: g.obstacleId + 1, group: g.groupId + 1, kind, x: distanceAt(at) + C.SEPARATION - w / 2, w, h };
+  const tower = { id: g.obstacleId + 1, group: g.groupId + 1, kind, x: distanceAt(at, g.level) + C.SEPARATION - w / 2, w, h };
   const orb = { id: g.groupId + 1, x: tower.x - v * .42, y: 142, r: C.ORB_RADIUS };
-  const proof = [boostWindow(tower, orb, 0), boostWindow(tower, orb, C.SEPARATION)];
+  const proof = [boostWindow(tower, orb, 0, g.level), boostWindow(tower, orb, C.SEPARATION, g.level)];
   if (!proof.every(p => p && p.width >= .12)) return null;
   const enter = Math.min(...proof.map(p => p.earliest));
   const leave = Math.max(...proof.map(p => p.latest)) + 1.8;
   if (!roadAllowed(g, enter, leave)) return null;
   const group = { id: ++g.groupId, action: 'boost', at, tier, count: 1, x: tower.x, w, h,
     cues: proof.map(p => ({ earliest: p.earliest, latest: p.latest, at: p.middle })) };
-  orb.launchXs = group.cues.map((cue, slot) => distanceAt(cue.at) + [0, C.SEPARATION][slot]);
+  orb.launchXs = group.cues.map((cue, slot) => distanceAt(cue.at, g.level) + [0, C.SEPARATION][slot]);
   orb.launchHeight = 0;
   g.obstacleId++;
   return { group, parts: [tower], orb };
 }
 export function makeFakeGroup(g, at) {
-  const tier = difficultyAt(at).tier, v = C.BASE_SPEED * speedAt(at);
+  const tier = difficultyAt(at).tier, v = C.BASE_SPEED * speedAt(at, g.level);
   const w = Math.min(170, v * .12), h = 28;
-  const x = distanceAt(at) + C.SEPARATION - w / 2;
-  if (!roadAllowed(g, timeAtDistance(x - C.SEPARATION - C.HIT_HALF), timeAtDistance(x + w + C.HIT_HALF))) return null;
+  const x = distanceAt(at, g.level) + C.SEPARATION - w / 2;
+  if (!roadAllowed(g, timeAtDistance(x - C.SEPARATION - C.HIT_HALF, g.level), timeAtDistance(x + w + C.HIT_HALF, g.level))) return null;
   const group = { id: ++g.groupId, action: 'stay', at, tier, count: 1, x, w, h, cues: [] };
   return { group, parts: [{ id: ++g.obstacleId, group: group.id, kind: 'fake', x, w, h, strikes: [null, null] }] };
 }
-function bounds(pack) {
+function bounds(pack, level) {
   const o = pack.group;
   if (o.starts) return;
   o.starts = [0, C.SEPARATION].map((offset, i) => o.action === 'stay'
-    ? timeAtDistance(o.x - C.HIT_HALF - offset) : o.cues[i].earliest);
+    ? timeAtDistance(o.x - C.HIT_HALF - offset, level) : o.cues[i].earliest);
   o.ends = [0, C.SEPARATION].map((offset, i) => o.action === 'stay'
-    ? timeAtDistance(o.x + o.w + C.HIT_HALF - offset) + .04
+    ? timeAtDistance(o.x + o.w + C.HIT_HALF - offset, level) + .04
     : o.cues[i].latest + (o.action === 'boost' ? 1.8 : FLIGHT + .04));
 }
 export function fillTrack(g) {
   addBossRemnants(g);
-  while (g.nextAt < Math.min(C.DURATION - 2, g.elapsed + 6)) {
+  while (g.nextAt < Math.min(g.level.duration - 2, g.elapsed + 6)) {
     const roll = g.nextAt < 5 ? 1 : random(g);
     const factory = roll < .16 ? makeStairs : roll < .34 ? makeBoostGroup : roll < .47 ? makeFakeGroup : makeGroup;
     let next = null;
@@ -557,13 +573,13 @@ export function fillTrack(g) {
     for (let attempt = 0; attempt < 3; attempt++) {
       next = factory(g, g.nextAt);
       if (!next) break;
-      bounds(next);
+      bounds(next, g.level);
       const shift = Math.max(...next.group.starts.map((t, i) => g.roadReady[i] + .035 - t));
       if (shift <= 0) break;
       g.nextAt += shift + .015; next = null;
     }
     if (next && (!roadAllowed(g, Math.min(...next.group.starts), Math.max(...next.group.ends))
-      || Math.max(...next.group.ends) > C.DURATION - .4)) next = null;
+      || Math.max(...next.group.ends) > g.level.duration - .4)) next = null;
     if (next) {
       g.groups.push(next.group); g.obstacles.push(...next.parts);
       if (next.orb) g.orbs.push(next.orb);
@@ -575,7 +591,7 @@ export function fillTrack(g) {
     const interval = (gap[0] + random(g) * (gap[1] - gap[0])) * (close ? .45 + random(g) * .25 : 1);
     if (next) {
       next.group.close = close;
-      g.nextAt = next.group.action === 'stairs' ? timeAtDistance(next.group.x + next.group.w - C.SEPARATION) + interval : g.nextAt + interval;
+      g.nextAt = next.group.action === 'stairs' ? timeAtDistance(next.group.x + next.group.w - C.SEPARATION, g.level) + interval : g.nextAt + interval;
     } else g.nextAt += .65 + random(g) * .35;
   }
   g.obstacles = g.obstacles.filter(o => o.x + o.w > g.distance - 250);
@@ -614,9 +630,9 @@ export function step(g, inputs = []) {
   }
   if (g.phase !== 'running') return;
   for (const id of inputs) jump(g, id);
-  g.tick++; g.elapsed = Math.min(C.DURATION, g.tick * C.DT);
-  g.distance = distanceAt(g.elapsed);
-  if (g.elapsed >= C.DURATION) { g.phase = 'won'; emit(g, 'win', -1); return; }
+  g.tick++; g.elapsed = Math.min(g.level.duration, g.tick * C.DT);
+  g.distance = distanceAt(g.elapsed, g.level);
+  if (g.elapsed >= g.level.duration) { g.phase = 'won'; emit(g, 'win', -1); return; }
   for (const boss of g.bosses) {
     if (g.tick === Math.round(boss.start / C.DT)) emit(g, 'boss-enter', -1);
     if (g.tick === Math.round(boss.end / C.DT)) { g.bossesCompleted++; emit(g, 'boss-exit', -1); }
@@ -664,13 +680,13 @@ export function step(g, inputs = []) {
           const platform = stairs?.stages.find(stage => stage.x + stage.w > x - C.HIT_HALF);
           if (platform) {
             p.y = platform.height;
-            p.respawnHoldUntil = Math.max(g.elapsed, timeAtDistance(platform.x + C.HIT_HALF - p.offset));
+            p.respawnHoldUntil = Math.max(g.elapsed, timeAtDistance(platform.x + C.HIT_HALF - p.offset, g.level));
             p.shieldUntil = Math.max(p.shieldUntil, Math.max(...stairs.ends) + .3);
           }
         }
         for (const o of activeFlight(g) ? [] : g.obstacles) {
           if (o.x < x + C.HIT_HALF && o.x + o.w > x - C.HIT_HALF)
-            p.shieldUntil = Math.max(p.shieldUntil, timeAtDistance(o.x + o.w + C.HIT_HALF - p.offset) + .15);
+            p.shieldUntil = Math.max(p.shieldUntil, timeAtDistance(o.x + o.w + C.HIT_HALF - p.offset, g.level) + .15);
         }
         emit(g, 'respawn', p.id);
       }
@@ -703,7 +719,7 @@ export function step(g, inputs = []) {
     }
     for (const o of g.obstacles) {
       if (o.kind !== 'fake' || o.strikes[p.id] || p.y <= C.FAKE_CLEARANCE) continue;
-      const warning = C.BASE_SPEED * speedAt(g.elapsed) * C.TRAP_RISE;
+      const warning = C.BASE_SPEED * speedAt(g.elapsed, g.level) * C.TRAP_RISE;
       if (x + C.HIT_HALF >= o.x - warning && x - C.HIT_HALF < o.x + o.w) {
         o.strikes[p.id] = { at: g.elapsed, reach: Math.max(230, p.y + C.SIZE + 110 + Math.max(0, p.vy) * .22) };
         emit(g, 'trap', p.id);
@@ -731,7 +747,7 @@ export function jumpCue(g, id) {
     const cue = shot.cues[p.offset === 0 ? 0 : 1];
     if (g.elapsed > cue.latest || g.elapsed < shot.at) continue;
     return { ...cue, group: `boss-${boss.id}`, key: `boss-${boss.id}:${shot.id}`,
-      x: distanceAt(cue.at) + p.offset, height: 0,
+      x: distanceAt(cue.at, g.level) + p.offset, height: 0,
       active: g.elapsed >= cue.earliest && g.elapsed <= cue.latest };
   }
   const group = g.groups.find(o => o.x + o.w > x - C.HIT_HALF);
@@ -742,7 +758,7 @@ export function jumpCue(g, id) {
   const cue = stage ? stage.cues[slot] : group.cues[slot];
   if (g.elapsed > cue.latest) return null;
   const orbId = stage?.orbId ?? (group.action === 'boost' ? group.id : null);
-  return { ...cue, group: group.id, key: `${group.id}:${stage?.index ?? 0}`, height: stage?.fromHeight ?? 0, x: distanceAt(cue.at) + p.offset,
+  return { ...cue, group: group.id, key: `${group.id}:${stage?.index ?? 0}`, height: stage?.fromHeight ?? 0, x: distanceAt(cue.at, g.level) + p.offset,
     orbId,
     active: g.elapsed >= cue.earliest && g.elapsed <= cue.latest };
 }

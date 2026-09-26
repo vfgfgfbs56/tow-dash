@@ -35,10 +35,10 @@ export class Renderer {
     const base = Math.min(w / 1280, h / 660);
     if (game && activeFlight(game)) { this.drawFlight(game, self, dt, now, base); return; }
     const phase = game?.phase, active = phase === 'running';
-    let zoom = active ? Math.max(.48, .82 * Math.sqrt(C.START_SPEED / speedAt(game.elapsed))) : 1;
-    if (active && (game.players.some(p => p.y > 215) || game.orbs.some(o => o.x > game.distance - 220 && o.x < game.distance + C.BASE_SPEED * speedAt(game.elapsed) * 2.1))) zoom = Math.min(zoom, .68);
+    let zoom = active ? Math.max(.38, .82 * Math.sqrt(2 / speedAt(game.elapsed, game.level))) : 1;
+    if (active && (game.players.some(p => p.y > 215) || game.orbs.some(o => o.x > game.distance - 220 && o.x < game.distance + C.BASE_SPEED * speedAt(game.elapsed, game.level) * 2.1))) zoom = Math.min(zoom, .68);
     if (active) for (const group of game.groups) {
-      if (group.action === 'stairs' && group.x + group.w > game.distance - 200 && group.x < game.distance + C.BASE_SPEED * speedAt(game.elapsed) * 2.6)
+      if (group.action === 'stairs' && group.x + group.w > game.distance - 200 && group.x < game.distance + C.BASE_SPEED * speedAt(game.elapsed, game.level) * 2.6)
         zoom = Math.min(zoom, h * .58 / (base * (group.h + 240)));
     }
     this.zoom += (zoom - this.zoom) * Math.min(1, dt * 5);
@@ -99,7 +99,7 @@ export class Renderer {
           this.orb(orb, x, s, now, game.players[self].lastOrb === orb.id,
             selfCue?.orbId === orb.id && selfCue.at - game.elapsed < 1);
           const slot = game.players[self].offset === 0 ? 0 : 1;
-          const markX = ox + ((orb.launchXs?.[slot] ?? orb.x - C.BASE_SPEED * speedAt(game.elapsed) * .16) - game.distance) * s;
+          const markX = ox + ((orb.launchXs?.[slot] ?? orb.x - C.BASE_SPEED * speedAt(game.elapsed, game.level) * .16) - game.distance) * s;
           this.orbLaunchMarker(orb, markX, s, now, w);
         }
         ctx.restore();
@@ -143,7 +143,7 @@ export class Renderer {
         }
         const nextFlip = game.flips[game.flipIndex];
         if (nextFlip && nextFlip - game.elapsed < 4) {
-          const x = ox + (distanceAt(nextFlip) + C.SEPARATION / 2 - game.distance) * s;
+          const x = ox + (distanceAt(nextFlip, game.level) + C.SEPARATION / 2 - game.distance) * s;
           ctx.save(); ctx.translate(x, ground); ctx.scale(1, side);
           ctx.globalAlpha = .65; ctx.strokeStyle = '#b39ad9'; ctx.lineWidth = Math.max(1.5, 2 * s);
           ctx.beginPath(); ctx.moveTo(0, -12 * s); ctx.lineTo(-13 * s, -70 * s);
@@ -152,7 +152,7 @@ export class Renderer {
         }
         const nextFlight = game.flights.find(f => f.start > game.elapsed);
         if (nextFlight && nextFlight.start - game.elapsed < 2.4) {
-          const x = ox + (distanceAt(nextFlight.start) + C.SEPARATION / 2 - game.distance) * s;
+          const x = ox + (distanceAt(nextFlight.start, game.level) + C.SEPARATION / 2 - game.distance) * s;
           ctx.save(); ctx.translate(x, ground); ctx.scale(1, side);
           ctx.strokeStyle = '#9a8ae6'; ctx.fillStyle = '#171229'; ctx.lineWidth = Math.max(2, 3 * s);
           ctx.beginPath(); ctx.moveTo(-46 * s, 0); ctx.lineTo(-46 * s, -235 * s);
@@ -248,12 +248,12 @@ export class Renderer {
     const transfer = Math.min(1, Math.max(0, elapsed / C.FLY_ENTRY));
     const blend = transfer * transfer * (3 - 2 * transfer);
     const sy = h * .81 / 1000, top = h * .145, ox = w * .24;
-    const sx = w * .64 / (distanceAt(Math.min(C.DURATION, game.elapsed + 2.4)) - game.distance);
-    const palette = ['#162129', '#211c30', '#142720', '#2b2518', '#271b28', '#16252e'][f.id];
-    const edge = ['#81959f', '#928aa7', '#83a394', '#a59c7f', '#a487a2', '#7b9aa9'][f.id];
+    const sx = w * .64 / (distanceAt(Math.min(game.level.duration, game.elapsed + 2.4), game.level) - game.distance);
+    const palette = ['#162129', '#211c30', '#142720', '#2b2518', '#271b28', '#16252e'][f.id % 6];
+    const edge = ['#81959f', '#928aa7', '#83a394', '#a59c7f', '#a487a2', '#7b9aa9'][f.id % 6];
     const samples = [[], []];
     for (let x = -40; x <= w + 60; x += 20) {
-      const t = timeAtDistance(game.distance + (x - ox) / sx) - f.start;
+      const t = timeAtDistance(game.distance + (x - ox) / sx, game.level) - f.start;
       for (let lane = 0; lane < 2; lane++) {
         const b = flightCorridor(f, t, lane);
         samples[lane].push({ x, top: top + b.top * sy, bottom: top + b.bottom * sy });
@@ -276,7 +276,7 @@ export class Renderer {
       c.strokeStyle = edge; c.lineWidth = Math.max(1.5, 2.4 * base); c.stroke();
     }
     for (let lane = 0; lane < 2; lane++) for (const knot of f.paths[lane]) {
-      const x = ox + (distanceAt(f.start + knot.t) - game.distance) * sx;
+      const x = ox + (distanceAt(f.start + knot.t, game.level) - game.distance) * sx;
       if (x < -20 || x > w + 20) continue;
       c.fillStyle = '#536170';
       for (const sign of [-1, 1]) {
@@ -316,14 +316,14 @@ export class Renderer {
         c.globalAlpha = p.alive ? .82 : .42;
         c.beginPath();
         trail.forEach((q, i) => {
-          const x = ox + (distanceAt(q.t) + p.offset - game.distance) * sx, y = top + q.y * sy;
+          const x = ox + (distanceAt(q.t, game.level) + p.offset - game.distance) * sx, y = top + q.y * sy;
           if (i) c.lineTo(x, y); else c.moveTo(x, y);
         });
         c.stroke(); c.restore();
       }
       if (!p.alive) continue;
       const pos = positions[p.id], grow = Math.min(1, .15 + (game.elapsed - p.spawnAt) * 2.1);
-      const rx = C.BASE_SPEED * speedAt(game.elapsed) * sx * C.FLY_HALF_TIME * grow;
+      const rx = C.BASE_SPEED * speedAt(game.elapsed, game.level) * sx * C.FLY_HALF_TIME * grow;
       const ry = C.FLY_RADIUS * sy * grow, lean = p.held ? -.5 : .5;
       c.save(); c.translate(pos.x, pos.y);
       if (p.shieldUntil > game.elapsed) {

@@ -9,6 +9,17 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="preload" href="/fonts/PressStart2P-Regular.ttf" as="font" type="font/ttf" crossorigin>
   <link rel="stylesheet" href="/style.css">
+  <!-- Уровни редактируются здесь: id по порядку, скорости ×, время в секундах. -->
+  <script id="level-config" type="application/json">
+  [
+    {"id":1,"startSpeed":2,"endSpeed":6,"duration":360},
+    {"id":2,"startSpeed":2.5,"endSpeed":6.5,"duration":360},
+    {"id":3,"startSpeed":3,"endSpeed":7,"duration":420},
+    {"id":4,"startSpeed":4,"endSpeed":7,"duration":240},
+    {"id":5,"startSpeed":4,"endSpeed":8,"duration":300},
+    {"id":6,"startSpeed":5,"endSpeed":10,"duration":600}
+  ]
+  </script>
   <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
   <script type="module" src="/app.js"></script>
 </head>
@@ -23,6 +34,8 @@
       <div class="panel-top"><span class="mini-mark"><i></i><b></b><i></i></span><span>ОДНА ТРАССА. ВЫ ВДВОЁМ.</span></div>
       <h1>ДОЙДИ ДО ФИНИША<span>С ПРИЦЕПОМ</span></h1>
       <div id="screen-home" class="screen">
+        <p class="caption level-heading">ВЫБЕРИ УРОВЕНЬ</p>
+        <div id="levels" class="levels" role="group" aria-label="Уровень игры"></div>
         <button class="primary" id="create"><span>СОЗДАТЬ КОМНАТУ</span><span aria-hidden="true">+</span></button>
         <button class="secondary" id="open-join">ВОЙТИ В КОМНАТУ</button>
         <div class="panel-bottom"><span><i class="blue-square"></i> ТЫ <i class="red-square"></i> ДРУГ</span><button class="text-button" id="practice" aria-label="Тренировка с напарником-ботом">ТРЕНИРОВКА С БОТОМ ↗</button></div>
@@ -34,6 +47,7 @@
         <div class="join-actions"><button class="text-button" data-home>НАЗАД</button><button class="text-button" id="clear-code">ОЧИСТИТЬ</button><button class="compact primary" id="join">ВОЙТИ →</button></div>
       </div>
       <div id="screen-wait" class="screen" hidden>
+        <p id="waiting-level" class="caption"></p>
         <p class="caption">КОД ВАШЕЙ КОМНАТЫ</p>
         <output id="invite-code" class="invite-code" aria-label="Код комнаты">0000</output>
         <p id="waiting-text" class="waiting-text">ЖДЁМ ДРУГА<span class="dots">...</span></p>

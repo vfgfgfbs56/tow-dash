@@ -1,16 +1,49 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { levelsFromHtml, validateLevels } from '../public/levels.js';
 import { C, createGame, step, jump, kill, speedAt, distanceAt, timeAtDistance, botWantsJump, localColor, difficultyAt, jumpCue, worldY, worldGravity, isFlipping, activeFlight, activeBoss, bulletHits, bulletImpact, botFlightHeld, setControl, makeBoostGroup, makeFakeGroup, roadAllowed, flightCorridor, flightClearance, verifyFlight, hits, makeStairs, trapHeight, moveRunner } from '../public/engine.js';
 
-test('5 second countdown; speed starts at 2.0 and grows every 10 seconds for 6 minutes', () => {
+const levels = levelsFromHtml(readFileSync(new URL('../public/index.html', import.meta.url), 'utf8'));
+test('six HTML levels define speed endpoints and duration with a speed change every 10 seconds', () => {
+  assert.deepEqual(levels.map(l => [l.startSpeed, l.endSpeed, l.duration]), [[2, 6, 360], [2.5, 6.5, 360], [3, 7, 420], [4, 7, 240], [4, 8, 300], [5, 10, 600]]);
+  for (const l of levels) {
+    assert.equal(speedAt(0, l), l.startSpeed); assert.equal(speedAt(9.99, l), l.startSpeed);
+    assert.equal(speedAt(l.duration - 10, l), l.endSpeed);
+    assert.equal(speedAt(l.duration, l), l.endSpeed);
+    assert.ok(speedAt(10, l) > l.startSpeed);
+    for (const t of [0, 1, 10, l.duration / 2, l.duration - 1])
+      assert.ok(Math.abs(timeAtDistance(distanceAt(t, l), l) - t) < .00002);
+  }
+  assert.throws(() => validateLevels([{ ...levels[0], id: 2 }]));
+  assert.throws(() => validateLevels([{ ...levels[0], endSpeed: 1 }]));
+});
+test('levels 2–6 complete with both players, their own flights and three bosses', () => {
+  for (const level of levels.slice(1)) {
+    const g = createGame(91237, level.id % 2, level); g.phase = 'running';
+    assert.equal(g.flights.length, level.duration / 60);
+    assert.equal(g.bosses.length, 3);
+    for (let n = 0; n < level.duration / C.DT && g.phase === 'running'; n++) {
+      for (let id = 0; id < 2; id++) {
+        if (activeFlight(g)) { if (n % 8 === 0) setControl(g, id, botFlightHeld(g, id)); }
+        else if (botWantsJump(g, id)) jump(g, id);
+      }
+      step(g);
+    }
+    assert.equal(g.phase, 'won', `level ${level.id}`);
+    assert.deepEqual(g.players.map(p => p.deaths), [0, 0], `level ${level.id}`);
+    assert.equal(g.flightsCompleted, level.duration / 60);
+    assert.equal(g.bossesCompleted, 3);
+  }
+});
+test('5 second countdown; level 1 lasts 6 minutes', () => {
   const g = createGame(7, 1);
   for (let n = 0; n < 599; n++) step(g);
   assert.equal(g.phase, 'countdown'); assert.equal(g.elapsed, 0);
   step(g); assert.equal(g.phase, 'running');
   assert.equal(speedAt(0), 2); assert.equal(speedAt(9.999), 2);
-  assert.equal(speedAt(10), 2.1); assert.equal(speedAt(350), 5.5);
-  assert.equal(speedAt(360), 5.5); assert.equal(C.DURATION, 360);
-  assert.equal(distanceAt(10), 8000); assert.equal(distanceAt(20), 16400);
+  assert.equal(speedAt(350), 6); assert.equal(speedAt(360), 6); assert.equal(g.level.duration, 360);
+  assert.equal(distanceAt(10), 8000);
   for (const t of [0, 1, 9.99, 10, 200, 359]) assert.ok(Math.abs(timeAtDistance(distanceAt(t)) - t) < .00001);
 });
 test('two perspectives keep identity/order and invert only color', () => {

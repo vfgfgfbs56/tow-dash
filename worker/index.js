@@ -1,17 +1,32 @@
 import { DurableObject } from 'cloudflare:workers';
 import { C, createGame, step, jump, setControl } from '../public/engine.js';
+import { levelsFromHtml } from '../public/levels.js';
 import { validateTelegram } from './auth.js';
 
 const json = (value, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } });
 const fail = (message, status = 400) => json({ error: message }, status);
 const randomInt = n => crypto.getRandomValues(new Uint32Array(1))[0] % n;
+async function configuredLevels(request, env) {
+  const url = new URL('/index.html', request.url);
+  const response = await env.ASSETS.fetch(new Request(url));
+  if (!response.ok) throw new Error('Не удалось прочесть index.html с уровнями.');
+  return levelsFromHtml(await response.text());
+}
+const progressStub = (env, uid) => env.ROOMS.get(env.ROOMS.idFromName(`progress:${uid}`));
+async function highestLevel(env, uid) {
+  const response = await progressStub(env, uid).fetch('https://room/progress');
+  return (await response.json()).highest;
+}
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(request);
     if (request.headers.get('Origin') && request.headers.get('Origin') !== url.origin) return fail('Недопустимый источник запроса.', 403);
-    if (url.pathname === '/api/config') return json({ version: C.VERSION, botUsername: env.BOT_USERNAME || '', telegramOnly: env.REQUIRE_TELEGRAM_AUTH === 'true' });
+    if (url.pathname === '/api/config') {
+      try { return json({ version: C.VERSION, levels: await configuredLevels(request, env), botUsername: env.BOT_USERNAME || '', telegramOnly: env.REQUIRE_TELEGRAM_AUTH === 'true' }); }
+      catch { return fail('Ошибка конфигурации уровней.', 500); }
+    }
     const wsMatch = url.pathname.match(/^\/api\/rooms\/(\d{4})\/ws$/);
     if (wsMatch && request.method === 'GET') {
       return env.ROOMS.get(env.ROOMS.idFromName(wsMatch[1])).fetch(request);
@@ -32,17 +47,23 @@ export default {
       if (!identity) return fail('Не удалось проверить Telegram. Закройте игру и откройте её снова. Проверьте токен бота в Cloudflare.', 401);
     }
     if (!identity && env.REQUIRE_TELEGRAM_AUTH === 'true') return fail('Откройте игру через Telegram.', 401);
-    identity ||= { uid: `guest:${crypto.randomUUID()}`, name: 'Игрок' };
+    identity ||= { uid: `guest:${/^[a-f0-9-]{36}$/i.test(body.guestId || '') ? body.guestId : crypto.randomUUID()}`, name: 'Игрок' };
+    if (url.pathname === '/api/progress') return json({ highest: await highestLevel(env, identity.uid) });
     if (url.pathname === '/api/rooms') {
+      let levels;
+      try { levels = await configuredLevels(request, env); } catch { return fail('Ошибка конфигурации уровней.', 500); }
+      const level = levels[Number(body.level) - 1];
+      if (!level || level.id !== body.level) return fail('Выберите уровень в меню.');
+      if (level.id > await highestLevel(env, identity.uid)) return fail('Сначала пройдите предыдущий уровень.', 403);
       for (let i = 0; i < 15; i++) {
         const code = String(1000 + randomInt(9000));
-        const response = await env.ROOMS.get(env.ROOMS.idFromName(code)).fetch(new Request('https://room/init', { method: 'POST', body: JSON.stringify({ code, identity }) }));
+        const response = await env.ROOMS.get(env.ROOMS.idFromName(code)).fetch(new Request('https://room/init', { method: 'POST', body: JSON.stringify({ code, identity, level }) }));
         if (response.status !== 409) return response;
       }
       return fail('Все комнаты заняты. Попробуйте позже.', 503);
     }
     const join = url.pathname.match(/^\/api\/rooms\/(\d{4})\/join$/);
-    if (join) return env.ROOMS.get(env.ROOMS.idFromName(join[1])).fetch(new Request('https://room/join', { method: 'POST', body: JSON.stringify({ identity }) }));
+    if (join) return env.ROOMS.get(env.ROOMS.idFromName(join[1])).fetch(new Request('https://room/join', { method: 'POST', body: JSON.stringify({ identity, highest: await highestLevel(env, identity.uid) }) }));
     return fail('Маршрут не найден.', 404);
   },
 };
@@ -55,7 +76,7 @@ export class GameRoom extends DurableObject {
     this.pause = null; this.ack = [0, 0]; this.limits = new Map();
     ctx.blockConcurrencyWhile(async () => {
       const saved = await ctx.storage.get('room');
-      if (saved && saved.meta.expires > Date.now()) {
+      if (saved && saved.meta.level?.id && saved.meta.expires > Date.now()) {
         this.meta = saved.meta; this.game = saved.game; this.ack = saved.ack || [0, 0];
         if (this.game && this.game.version !== C.VERSION) {
           this.game = null; this.ack = [0, 0];
@@ -74,26 +95,37 @@ export class GameRoom extends DurableObject {
   }
   async fetch(request) {
     const path = new URL(request.url).pathname;
+    if (path === '/progress') {
+      if (request.method === 'POST') {
+        const { completed } = await request.json();
+        if (!Number.isInteger(completed) || completed < 1 || completed > 30) return fail('Неверный уровень.');
+        const highest = Math.max(1, Number(await this.ctx.storage.get('highest')) || 1, completed + 1);
+        await this.ctx.storage.put('highest', highest);
+        return json({ highest });
+      }
+      return json({ highest: Number(await this.ctx.storage.get('highest')) || 1 });
+    }
     if (path === '/init') {
       // Serialize reservation across the await so two creators cannot share a code.
       return this.ctx.blockConcurrencyWhile(async () => {
         if (this.meta && this.meta.expires > Date.now()) return fail('Занято.', 409);
-        const { code, identity } = await request.json();
-        this.meta = { code, expires: Date.now() + 30 * 60 * 1000, players: [this.member(identity)] };
+        const { code, identity, level } = await request.json();
+        this.meta = { code, level, expires: Date.now() + 30 * 60 * 1000, players: [this.member(identity)] };
         this.game = null; this.ack = [0, 0]; this.pause = null;
         await this.save(); await this.ctx.storage.setAlarm(this.meta.expires);
-        return json({ code, token: this.meta.players[0].token, self: 0 });
+        return json({ code, token: this.meta.players[0].token, self: 0, level: level.id });
       });
     }
     if (!this.meta || this.meta.expires <= Date.now()) return fail('Комната не найдена или время ожидания истекло.', 404);
     if (path === '/join') {
       return this.ctx.blockConcurrencyWhile(async () => {
-        const { identity } = await request.json();
+        const { identity, highest } = await request.json();
+        if (highest < this.meta.level.id) return fail(`Другу ещё не открыт уровень ${this.meta.level.id}.`, 403);
         if (this.meta.players.some(p => p.uid === identity.uid)) return fail('Вы уже в этой комнате. Откройте её на устройстве друга.', 409);
         if (this.meta.players.length >= 2) return fail('В комнате уже два игрока.', 409);
         this.meta.players.push(this.member(identity));
         await this.save(); this.broadcast();
-        return json({ code: this.meta.code, token: this.meta.players[1].token, self: 1 });
+        return json({ code: this.meta.code, token: this.meta.players[1].token, self: 1, level: this.meta.level.id });
       });
     }
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return fail('Нужен WebSocket.', 426);
@@ -108,6 +140,7 @@ export class GameRoom extends DurableObject {
     server.serializeAttachment({ self });
     for (const socket of old) { try { socket.close(4001, 'Replaced'); } catch {} }
     this.meta.players[self].ready = false;
+    if (this.game?.phase === 'won' && !this.meta.wonRecorded) this.recordWin();
     this.send(server, { type: 'welcome', self, code: this.meta.code, ack: this.ack[self] });
     this.broadcast(); this.ensureTimer();
     return new Response(null, { status: 101, webSocket: client, headers: { 'Sec-WebSocket-Protocol': 'tow-dash' } });
@@ -116,18 +149,31 @@ export class GameRoom extends DurableObject {
   send(ws, msg) { try { if (ws.readyState === 1) ws.send(JSON.stringify(msg)); } catch {} }
   broadcast() {
     if (!this.meta) return;
-    const msg = { type: 'state', code: this.meta.code, serverNow: Date.now(), game: this.game,
+    const msg = { type: 'state', code: this.meta.code, level: this.meta.level.id, progressSaved: !!this.meta.wonRecorded, serverNow: Date.now(), game: this.game,
       pause: this.pause, ack: this.ack,
       players: this.meta.players.map((p, id) => ({ id, name: p.name, ready: p.ready, rematch: p.rematch, connected: this.connected(id) })) };
     for (const ws of this.sockets()) this.send(ws, msg);
   }
   start() {
-    this.game = createGame(crypto.getRandomValues(new Uint32Array(1))[0], randomInt(2));
+    this.game = createGame(crypto.getRandomValues(new Uint32Array(1))[0], randomInt(2), this.meta.level);
+    this.meta.wonRecorded = false;
     this.meta.players.forEach(p => { p.rematch = false; });
     this.pause = null; this.acc = 0; this.lastTick = Date.now();
     this.meta.expires = Date.now() + 30 * 60 * 1000;
     this.ctx.storage.setAlarm(this.meta.expires);
     this.save(); this.ensureTimer(); this.broadcast();
+  }
+  recordWin() {
+    if (this.meta?.wonRecorded || this.writingWin || this.game?.phase !== 'won') return;
+    this.writingWin = true;
+    const level = this.meta.level.id;
+    this.ctx.waitUntil(Promise.all(this.meta.players.map(async p => {
+      const response = await progressStub(this.env, p.uid).fetch(new Request('https://room/progress', {
+        method: 'POST', body: JSON.stringify({ completed: level }),
+      }));
+      if (!response.ok) throw new Error('Progress write failed');
+    })).then(async () => { this.meta.wonRecorded = true; await this.save(); this.broadcast(); })
+      .finally(() => { this.writingWin = false; }));
   }
   webSocketMessage(ws, data) {
     if (typeof data !== 'string' || data.length > 512) { ws.close(1009, 'Message too large'); return; }
@@ -197,6 +243,7 @@ export class GameRoom extends DurableObject {
       while (this.acc >= C.DT) { step(this.game); this.acc -= C.DT; }
     }
     const ended = !['running', 'countdown'].includes(this.game.phase);
+    if (this.game.phase === 'won') this.recordWin();
     // Always send terminal state, even between the regular snapshot ticks.
     if (now - this.lastBroadcast >= 49 || ended) { this.broadcast(); this.lastBroadcast = now; }
     if (now - this.lastSave >= 5000 || ended) { this.lastSave = now; this.save(); }

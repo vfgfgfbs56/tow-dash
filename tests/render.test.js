@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { Renderer } from '../public/render.js';
 import { C, createGame, distanceAt, makeBoostGroup } from '../public/engine.js';
+import { levelsFromHtml } from '../public/levels.js';
 
 test('the real canvas renderer draws spiked pillars, boss and bullets, remnant and narrow flight without runtime errors', () => {
   const calls = new Map();
@@ -80,4 +82,22 @@ test('stair blocks have square outlines and no inner dots', () => {
   assert.equal(outlined.length, 6);
   for (const [_x, _y, width, height] of outlined) assert.equal(width, height);
   assert.deepEqual(filled, [[10, -192, 128, 192]], 'only the black backing is filled');
+});
+
+test('the tenth flight has a valid palette on the ten-minute level', () => {
+  const level = levelsFromHtml(readFileSync(new URL('../public/index.html', import.meta.url), 'utf8'))[5];
+  const ctx = new Proxy({}, { get(_target, key) {
+    if (key === 'createLinearGradient') return () => ({ addColorStop(_position, color) {
+      assert.match(color, /^#[a-f0-9]{6}$/i);
+    } });
+    return () => {};
+  }, set() { return true; } });
+  globalThis.matchMedia = () => ({ matches: true });
+  globalThis.ResizeObserver = class { observe() {} };
+  globalThis.devicePixelRatio = 1;
+  const canvas = { getContext: () => ctx, getBoundingClientRect: () => ({ width: 1440, height: 900 }) };
+  const renderer = new Renderer(canvas), game = createGame(12345, 0, level);
+  game.phase = 'running'; game.flightActive = 9;
+  game.elapsed = game.flights[9].start + 3; game.distance = distanceAt(game.elapsed, level);
+  renderer.draw(game, 0, 1 / 60, game.elapsed);
 });
