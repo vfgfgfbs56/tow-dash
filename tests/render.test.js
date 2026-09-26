@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Renderer } from '../public/render.js';
-import { C, createGame, distanceAt } from '../public/engine.js';
+import { C, createGame, distanceAt, makeBoostGroup } from '../public/engine.js';
 
 test('the real canvas renderer draws spiked pillars, boss and bullets, remnant and narrow flight without runtime errors', () => {
   const calls = new Map();
+  const labels = [];
   const ctx = new Proxy({}, { get(_target, key) {
     if (key === 'createLinearGradient') return () => ({ addColorStop() {} });
+    if (key === 'fillText') return value => { labels.push(value); calls.set(key, (calls.get(key) || 0) + 1); };
     return (...args) => { calls.set(key, (calls.get(key) || 0) + 1); return undefined; };
   }, set() { return true; } });
   globalThis.matchMedia = () => ({ matches: true });
@@ -32,4 +34,11 @@ test('the real canvas renderer draws spiked pillars, boss and bullets, remnant a
   const f = g.flights[0]; g.elapsed = f.start + 4; g.distance = distanceAt(g.elapsed);
   g.flightActive = 0; render.draw(g, 0, 1 / 60, g.elapsed);
   assert.ok(calls.get('clip') >= 2, 'flight corridor clips its background');
+  g.flightActive = -1;
+  const pack = makeBoostGroup(g, 4);
+  assert.ok(pack); g.groups = [pack.group]; g.obstacles = pack.parts; g.orbs = [pack.orb];
+  g.elapsed = pack.group.cues[g.players[0].offset === 0 ? 0 : 1].at;
+  g.distance = distanceAt(g.elapsed);
+  render.draw(g, 0, 1 / 60, g.elapsed);
+  assert.ok(labels.includes('ПРЫГАЙ'), 'the orb timing cue is visible at the launch point');
 });

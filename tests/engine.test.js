@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { C, createGame, step, jump, kill, speedAt, distanceAt, timeAtDistance, botWantsJump, localColor, difficultyAt, jumpCue, worldY, worldGravity, isFlipping, activeFlight, activeBoss, bulletHits, bulletImpact, botFlightHeld, setControl, makeBoostGroup, makeFakeGroup, roadAllowed, flightCorridor, verifyFlight, hits, makeStairs, trapHeight, moveRunner } from '../public/engine.js';
+import { C, createGame, step, jump, kill, speedAt, distanceAt, timeAtDistance, botWantsJump, localColor, difficultyAt, jumpCue, worldY, worldGravity, isFlipping, activeFlight, activeBoss, bulletHits, bulletImpact, botFlightHeld, setControl, makeBoostGroup, makeFakeGroup, roadAllowed, flightCorridor, flightClearance, verifyFlight, hits, makeStairs, trapHeight, moveRunner } from '../public/engine.js';
 
 test('5 second countdown; speed starts at 2.0 and grows every 10 seconds for 6 minutes', () => {
   const g = createGame(7, 1);
@@ -58,9 +58,9 @@ test('ceiling gravity reverses world motion; transfers block jumping and preserv
   for (let n = 0; n < 180; n++) { step(g, n === 0 ? [0] : []); step(copy, n === 0 ? [0] : []); }
   assert.deepEqual(g, copy, 'serialized network state uses the same simulation');
 });
-test('50 full races: spiked ladders, bosses, close combinations, all 300 variable mazes and timing-window boundaries', () => {
+test('50 full races: random ladders and rings, 16-shot bosses, short transitions, all 300 mazes', () => {
   let total = 0, boosts = 0, stairs = 0, stacks = 0, close = 0, shortenedPairs = 0, threeBlockGaps = 0, remnants = 0;
-  const kinds = new Set(), counts = [0, 0, 0, 0, 0, 0], assignments = new Set(), narrow = [], wide = [];
+  const kinds = new Set(), counts = [0, 0, 0, 0, 0, 0], assignments = new Set(), narrow = [], wide = [], pillarCounts = new Set(), ringCounts = new Set();
   for (let seed = 1; seed <= 50; seed++) {
     const g = createGame(seed * 91237, seed % 2); g.phase = 'running';
     assert.equal(g.flights.length, 6);
@@ -71,15 +71,20 @@ test('50 full races: spiked ladders, bosses, close combinations, all 300 variabl
       assert.ok(f.clearance >= 10); assignments.add(f.lanes[0]);
       assert.ok(f.widthRange[0] < 80 && f.widthRange[1] >= 130);
       narrow.push(f.widthRange[0]); wide.push(f.widthRange[1]);
-      assert.ok(g.flips.every(t => t < f.start - 3 || t > f.end + 2));
+      assert.ok(g.flips.every(t => t + C.FLIP_DURATION <= f.start - 1.5 + 1e-7 || t >= f.end + 1.5 - 1e-7));
     }
+    assert.ok(g.flights.filter(f => g.flips.some(t => Math.abs(t - f.end - 1.5) < .01
+      || Math.abs(t + C.FLIP_DURATION + 1.5 - f.start) < .01)).length >= 5);
     assert.equal(g.bosses.length, 3);
     for (const boss of g.bosses) {
       assert.ok(boss.start > 120 && boss.end < 355);
-      assert.ok(Math.abs(boss.end - boss.start - 16) < 1e-8); assert.equal(boss.shots.length, 3);
-      assert.ok(g.flights.every(f => boss.start >= f.end + 3 || boss.end <= f.start - 5));
-      assert.ok(g.flips.every(t => t < boss.start - 3 || t > boss.end + 3));
-      assert.equal(new Set(boss.shots.map(s => s.factor)).size, 3);
+      assert.ok(Math.abs(boss.end - boss.start - 16) < 1e-8); assert.equal(boss.shots.length, 16);
+      assert.ok(g.flights.every(f => boss.start >= f.end + 1.5 - 1e-7 || boss.end <= f.start - 3.2 + 1e-7));
+      assert.ok(g.flips.every(t => t + C.FLIP_DURATION <= boss.start - 1.5 + 1e-7 || t >= boss.end + 3.2 - 1e-7));
+      assert.equal(new Set(boss.shots.map(s => s.factor)).size, 16);
+      for (let n = 1; n < boss.shots.length; n++) assert.ok(boss.shots[n].at - boss.shots[n - 1].at <= 1);
+      for (let t = boss.start; t < boss.end; t += .1)
+        assert.ok(boss.shots.filter(s => t >= s.at && t < s.at + C.BULLET_LIFE).length <= 2);
       for (const shot of boss.shots) for (let i = 0; i < 2; i++) {
         const impact = bulletImpact(shot, i ? C.SEPARATION : 0);
         assert.ok(impact > shot.at && impact < shot.at + 2);
@@ -108,6 +113,12 @@ test('50 full races: spiked ladders, bosses, close combinations, all 300 variabl
         }
         if (group.boss === undefined) assert.ok(roadAllowed(g, Math.min(...group.starts), Math.max(...group.ends)));
         stairs += group.action === 'stairs'; close += !!group.close;
+        if (group.action === 'stairs') {
+          pillarCounts.add(group.pillarCount); ringCounts.add(group.orbCount);
+          assert.ok(group.pillarCount >= 3 && group.pillarCount <= 6);
+          assert.ok(group.orbCount >= 1 && group.orbCount <= 4);
+          assert.equal(parts.filter(o => o.kind === 'pit').length, group.pillarCount - 1);
+        }
         stacks += parts.filter(o => o.kind === 'stack').length;
         remnants += group.boss !== undefined;
         if (previous?.action === 'jump' && group.action === 'jump' && previous.boss === undefined && group.boss === undefined
@@ -139,6 +150,8 @@ test('50 full races: spiked ladders, bosses, close combinations, all 300 variabl
   }
   assert.ok(total > 8000); assert.ok(boosts > 250); assert.ok(stairs > 250); assert.ok(stacks > 130); assert.ok(close > 500);
   assert.equal(kinds.size, 10); assert.equal(assignments.size, 2); assert.equal(remnants, 150);
+  assert.deepEqual([...pillarCounts].sort(), [3, 4, 5, 6]);
+  assert.deepEqual([...ringCounts].sort(), [1, 2, 3, 4]);
   assert.ok(Math.min(...narrow) < 75 && Math.max(...wide) > 145);
   assert.ok(shortenedPairs >= 50, 'shorter spacings survive the physics checks, not just the random choice');
   assert.ok(threeBlockGaps >= 50, 'three-cube gaps exist inside verified one-jump groups');
@@ -147,7 +160,7 @@ test('50 full races: spiked ladders, bosses, close combinations, all 300 variabl
     assert.ok(difficultyAt(i * 60).count[0] >= difficultyAt((i - 1) * 60).count[0]);
     assert.ok(difficultyAt(i * 60).gap[0] < difficultyAt((i - 1) * 60).gap[0]);
   }
-  console.log(`Verified ${total} figures, ${boosts} orb obstacles (${stacks} double stacks), ${stairs} spiked ladders, ${threeBlockGaps} three-cube internal gaps, ${shortenedPairs} closer ordinary-group pairs, 300 varying mazes and 150 bosses; per-minute totals: ${counts.join(', ')}`);
+  console.log(`Verified ${total} figures, ${boosts} orb obstacles (${stacks} double stacks), ${stairs} varied ladders, ${threeBlockGaps} three-cube gaps, ${shortenedPairs} close group pairs, 300 mazes and 150 bosses × 16 shots; per-minute totals: ${counts.join(', ')}`);
 });
 
 function emptyGame() {
@@ -193,7 +206,7 @@ test('red trap rises before a jumping player dies; ground-level teammate is safe
     } else assert.deepEqual(o.strikes, [null, null]);
   }
 });
-test('boss fires three different shots: low shots require a timed jump, high shots pass above a grounded cube', () => {
+test('boss fires sixteen shots faster than once a second: low shots require jumps, high shots pass above', () => {
   for (const jumping of [false, true]) {
     const g = emptyGame();
     const boss = g.bosses[0], low = boss.shots[0], high = boss.shots[1];
@@ -216,10 +229,11 @@ test('stair tops support both players, allow repeated jumps and a safe descent o
   for (const side of [1, -1]) {
     const g = emptyGame(), pack = makeStairs(g, 3);
     assert.ok(pack); g.roadSide = side; g.flipFrom = side;
-    g.groups = [pack.group]; g.obstacles = pack.parts; g.orbs = [pack.orb];
-    assert.equal(pack.parts.filter(o => o.kind === 'step').length, 5);
-    assert.equal(pack.parts.filter(o => o.kind === 'pit').length, 4);
-    assert.ok(pack.parts[2].h > C.JUMP ** 2 / (2 * C.GRAVITY) + pack.parts[1].h);
+    g.groups = [pack.group]; g.obstacles = pack.parts; g.orbs = pack.orbs;
+    assert.equal(pack.parts.filter(o => o.kind === 'step').length, pack.group.pillarCount);
+    assert.equal(pack.parts.filter(o => o.kind === 'pit').length, pack.group.pillarCount - 1);
+    assert.equal(pack.orbs.length, pack.group.orbCount);
+    assert.ok(pack.group.h > C.JUMP ** 2 / (2 * C.GRAVITY) + pack.parts[0].h);
     const landed = [new Set(), new Set()];
     while (g.elapsed < Math.max(...pack.group.ends) + .2) {
       for (let id = 0; id < 2; id++) if (botWantsJump(g, id)) jump(g, id);
@@ -229,7 +243,7 @@ test('stair tops support both players, allow repeated jumps and a safe descent o
     for (const p of g.players) {
       assert.equal(p.deaths, 0); assert.equal(p.y, 0); assert.equal(p.grounded, true);
       assert.deepEqual([...landed[p.id]].sort((a,b) => a-b), pack.group.stages.map(s => s.height).sort((a,b) => a-b));
-      assert.equal(p.jumps, pack.group.stages.length); assert.equal(p.boosts, 1);
+      assert.equal(p.jumps, pack.group.stages.length); assert.equal(p.boosts, pack.orbs.length);
     }
     const still = { y: pack.parts[0].h, vy: 0, grounded: true };
     moveRunner(still, pack.parts[0].x + 80, pack.parts);
@@ -239,6 +253,41 @@ test('stair tops support both players, allow repeated jumps and a safe descent o
   g.groups = [pack.group]; g.obstacles = pack.parts;
   while (g.elapsed < 4 && g.phase === 'running') step(g);
   assert.equal(g.phase, 'lost', 'walking into a vertical stair face is lethal');
+});
+test('respawning over a spiked stair gap lands on the next platform instead of dying immediately', () => {
+  const g = emptyGame(), pack = makeStairs(g, 8);
+  assert.ok(pack); g.bosses = []; g.groups = [pack.group]; g.obstacles = pack.parts; g.orbs = pack.orbs;
+  const [first, second] = pack.parts.filter(o => o.kind === 'step');
+  const target = timeAtDistance((first.x + first.w + second.x) / 2 - g.players[0].offset);
+  g.tick = Math.round((target - 6) / C.DT); g.elapsed = g.tick * C.DT; g.distance = distanceAt(g.elapsed);
+  g.players[1].shieldUntil = 1000;
+  kill(g, 0);
+  while (!g.players[0].alive && g.phase === 'running') step(g);
+  assert.ok(Math.abs(g.elapsed - target) < .08);
+  assert.equal(g.players[0].y, pack.group.stages[1].height);
+  assert.ok(g.players[0].respawnHoldUntil >= g.elapsed);
+  assert.ok(g.players[0].shieldUntil > Math.max(...pack.group.ends));
+  while (g.elapsed < Math.max(...pack.group.ends) + .5) step(g);
+  assert.equal(g.players[0].deaths, 1);
+  assert.equal(g.players[0].alive, true);
+});
+test('respawning inside a narrow flight enters a safe lane and is guided until first input', () => {
+  const g = createGame(91), f = g.flights[0];
+  g.phase = 'running'; g.nextAt = 1000; g.obstacles = []; g.groups = []; g.orbs = []; g.flips = []; g.bosses = [];
+  g.tick = Math.round((f.start + 1) / C.DT); g.elapsed = g.tick * C.DT; g.distance = distanceAt(g.elapsed);
+  g.flightActive = 0;
+  for (const p of g.players) { p.flyLane = f.lanes[p.id]; p.flyY = flightCorridor(f, 1, p.flyLane).center; }
+  g.players[1].shieldUntil = 1000;
+  kill(g, 0);
+  while (!g.players[0].alive && g.phase === 'running') {
+    setControl(g, 1, botFlightHeld(g, 1)); step(g);
+  }
+  const p = g.players[0];
+  assert.ok(p.spawnAssist);
+  assert.ok(flightClearance(f, timeAtDistance(g.distance + p.offset) - f.start, p.flyLane, p.flyY) >= 0);
+  while (g.elapsed < f.end + .1) { setControl(g, 1, botFlightHeld(g, 1)); step(g); }
+  assert.equal(p.deaths, 1); assert.equal(p.alive, true);
+  assert.equal(p.spawnAssist, false);
 });
 test('a double stacked block is too high without the yellow orb', () => {
   for (const enabled of [false, true]) {

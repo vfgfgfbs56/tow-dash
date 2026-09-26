@@ -60,6 +60,7 @@ export class Renderer {
     }
     this.anchor += (target - this.anchor) * Math.min(1, dt * 4);
     const ox = w * this.anchor;
+    const selfCue = active ? jumpCue(game, self) : null;
     const players = game?.players || [0, 1].map(id => ({ id, offset: id * C.SEPARATION, y: 0, vy: 0, alive: true, shieldUntil: 0, spawnAt: -10 }));
     const positions = players.map(p => {
       this.ys[p.id] += (p.y - this.ys[p.id]) * Math.min(1, dt * 35);
@@ -95,7 +96,8 @@ export class Renderer {
         for (const orb of game.orbs) {
           const x = ox + (orb.x - game.distance) * s;
           if (x < -100 || x > w + 100) continue;
-          this.orb(orb, x, s, now, game.players[self].lastOrb === orb.id);
+          this.orb(orb, x, s, now, game.players[self].lastOrb === orb.id,
+            selfCue?.orbId === orb.id && selfCue.at - game.elapsed < 1);
         }
         ctx.restore();
       }
@@ -104,21 +106,37 @@ export class Renderer {
     if (game) {
       if (active) this.drawBoss(game, ox, ground, side, s, base, now);
       if (active && transfer === 1) {
-        const cue = jumpCue(game, self);
+        const cue = selfCue;
         if (cue && cue.at - game.elapsed < 2) {
           const x = ox + (cue.x - game.distance) * s;
           const markerScale = Math.max(.75, base);
           const progress = Math.max(0, Math.min(1, (game.elapsed - cue.earliest) / (cue.latest - cue.earliest)));
           // One small, soft pulse per jump window; no flashing screen or text.
           ctx.globalAlpha = cue.active ? (this.reduced ? .65 : .32 + Math.sin(progress * Math.PI) * .42) : .15;
-          ctx.strokeStyle = '#00b5f1'; ctx.lineWidth = Math.max(1.5, 2 * markerScale);
+          ctx.strokeStyle = cue.orbId ? '#ffdb63' : '#00b5f1'; ctx.lineWidth = Math.max(1.5, 2 * markerScale);
           for (const lift of [11, 21]) {
-            // Outside the road: the cube cannot cover its own timing cue.
-            const y = ground - side * cue.height * s + side * lift * markerScale;
+            // Above the current platform, visible even while climbing stairs.
+            const y = ground - side * (cue.height * s + lift * markerScale);
             ctx.beginPath(); ctx.moveTo(x - 8 * markerScale, y + side * 6 * markerScale);
             ctx.lineTo(x, y); ctx.lineTo(x + 8 * markerScale, y + side * 6 * markerScale); ctx.stroke();
           }
           ctx.globalAlpha = 1;
+          if (cue.orbId && cue.at - game.elapsed < .7) {
+            const orb = game.orbs.find(o => o.id === cue.orbId);
+            if (orb) {
+              const orbX = ox + (orb.x - game.distance) * s;
+              ctx.save(); ctx.strokeStyle = '#ffdb63'; ctx.globalAlpha = .55;
+              ctx.setLineDash([3 * markerScale, 8 * markerScale]); ctx.lineWidth = Math.max(1, 1.5 * markerScale);
+              ctx.beginPath(); ctx.moveTo(x, ground - side * (cue.height * s + 34 * markerScale));
+              ctx.quadraticCurveTo((x + orbX) / 2, ground - side * ((cue.height + orb.y) * s / 2 + 75 * markerScale), orbX, ground - side * orb.y * s);
+              ctx.stroke(); ctx.restore();
+              if (cue.active) {
+                ctx.save(); ctx.fillStyle = '#ffdb63'; ctx.textAlign = 'center';
+                ctx.font = `${Math.max(8, 10 * base)}px Press, monospace`;
+                ctx.fillText('ПРЫГАЙ', x, ground - side * (cue.height * s + 62 * markerScale)); ctx.restore();
+              }
+            }
+          }
         }
         const nextFlip = game.flips[game.flipIndex];
         if (nextFlip && nextFlip - game.elapsed < 4) {
@@ -320,7 +338,7 @@ export class Renderer {
     this.events(game, self, positions);
     this.drawParticles(dt, base);
   }
-  orb(o, x, s, now, used) {
+  orb(o, x, s, now, used, ready = false) {
     const c = this.ctx, y = -o.y * s, r = o.r * s;
     c.save(); c.globalAlpha *= used ? .28 : 1;
     c.strokeStyle = '#ffdb63'; c.lineWidth = Math.max(2, 3 * s);
@@ -330,6 +348,10 @@ export class Renderer {
     c.beginPath(); c.arc(x, y, r * .65, 0, Math.PI * 2); c.stroke();
     c.globalAlpha *= .28; c.strokeStyle = '#ffdb63';
     c.beginPath(); c.arc(x, y, r * (this.reduced ? 1.3 : 1.3 + Math.sin(now * 4) * .09), 0, Math.PI * 2); c.stroke();
+    if (ready) {
+      c.globalAlpha = .8; c.lineWidth = Math.max(2, 3 * s);
+      c.beginPath(); c.arc(x, y, r * 1.48, 0, Math.PI * 2); c.stroke();
+    }
     c.restore();
   }
   drawBoss(game, ox, ground, side, s, base, now) {
@@ -355,13 +377,13 @@ export class Renderer {
     c.beginPath(); c.moveTo(-size * .29, size * .2); c.lineTo(0, size * .32); c.lineTo(size * .29, size * .2); c.stroke();
     c.restore();
     for (const shot of boss.shots) {
-      if (game.elapsed < shot.at || game.elapsed > shot.at + 2.6) continue;
+      if (game.elapsed < shot.at || game.elapsed > shot.at + C.BULLET_LIFE) continue;
       const bx = ox + (bulletX(shot, game.elapsed) - game.distance) * s;
       if (bx < -80 || bx > this.w + 100) continue;
       const by = ground - side * shot.y * s, r = shot.r * s;
-      c.save(); c.globalAlpha = .3; c.strokeStyle = shot.id === 1 ? '#fafafa' : '#ff507e';
+      c.save(); c.globalAlpha = .3; c.strokeStyle = shot.id % 2 ? '#fafafa' : '#ff507e';
       c.lineWidth = Math.max(2, 5 * s); c.beginPath(); c.moveTo(bx + 8 * s, by); c.lineTo(bx + 48 * s, by); c.stroke();
-      c.globalAlpha = 1; c.fillStyle = shot.id === 1 ? '#f5f5fa' : '#ff507e';
+      c.globalAlpha = 1; c.fillStyle = shot.id % 2 ? '#f5f5fa' : '#ff507e';
       c.beginPath(); c.arc(bx, by, Math.max(3 * base, r), 0, Math.PI * 2); c.fill();
       c.strokeStyle = '#fff'; c.lineWidth = Math.max(1, 1.5 * base);
       c.beginPath(); c.arc(bx, by, Math.max(3 * base, r), 0, Math.PI * 2); c.stroke(); c.restore();

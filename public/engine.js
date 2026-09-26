@@ -1,16 +1,17 @@
 // Shared deterministic, fixed-step simulation. Cloudflare is authoritative.
 export const C = Object.freeze({
-  VERSION: 5, DT: 1 / 120, DURATION: 360, COUNTDOWN: 5, RESPAWN: 6,
+  VERSION: 6, DT: 1 / 120, DURATION: 360, COUNTDOWN: 5, RESPAWN: 6,
   SIZE: 64, HIT_HALF: 26, GRAVITY: 2800, JUMP: 1080,
   BASE_SPEED: 400, START_SPEED: 2, SPEED_STEP: 0.1,
   SPEED_EVERY: 10, SEPARATION: 172, SHIELD: 1.25,
-  FLIP_DURATION: .65, FLIP_BEFORE: 1.3, FLIP_AFTER: 1.45,
+  FLIP_DURATION: .65, FLIP_BEFORE: 1.5, FLIP_AFTER: 1.5,
   BOOST: 1470, ORB_RADIUS: 34, FAKE_CLEARANCE: 12,
   TRAP_RISE: .12, TRAP_HOLD: .24, TRAP_FALL: .28,
   FLY_DURATION: 12, FLY_ENTRY: .55, FLY_SPEED: 220,
   FLY_RADIUS: 22, FLY_HALF_TIME: .035,
-  FLY_BEFORE: 2, FLY_AFTER: 1.6,
-  BOSS_DURATION: 16, BOSS_BEFORE: 2, BOSS_AFTER: 3.4,
+  FLY_BEFORE: 1.5, FLY_AFTER: 1.5,
+  BOSS_DURATION: 16, BOSS_BEFORE: 1.5, BOSS_AFTER: 3.4,
+  BULLET_LIFE: 1.35, BOSS_SHOTS: 16, SHOT_INTERVAL: .9,
 });
 export const FLIGHT = 2 * C.JUMP / C.GRAVITY;
 export function speedAt(t) {
@@ -82,6 +83,15 @@ export function flightClearance(f, t, lane, y) {
   }
   return result;
 }
+export function flightSpawnY(f, t, lane) {
+  let low = -Infinity, high = Infinity;
+  for (const q of [t - C.FLY_HALF_TIME, t, t + C.FLY_HALF_TIME, t + .09]) {
+    const b = flightCorridor(f, q, lane);
+    low = Math.max(low, b.top + C.FLY_RADIUS + 8);
+    high = Math.min(high, b.bottom - C.FLY_RADIUS - 8);
+  }
+  return low <= high ? (low + high) / 2 : flightCorridor(f, t, lane).center;
+}
 function followCorridor(f, t, lane, y, held) {
   const target = flightCorridor(f, t + .08, lane).center;
   return y > target + 12 ? true : y < target - 12 ? false : held;
@@ -148,7 +158,7 @@ export function bulletImpact(b, offset) {
   return (lo + hi) / 2;
 }
 export function bulletHits(x, y, b, t) {
-  if (t < b.at || t > b.at + 2.6) return false;
+  if (t < b.at || t > b.at + C.BULLET_LIFE) return false;
   const dx = Math.max(0, Math.abs(x - bulletX(b, t)) - C.HIT_HALF);
   const dy = Math.max(0, Math.abs(y + C.SIZE / 2 - b.y) - C.SIZE / 2);
   return dx * dx + dy * dy < b.r * b.r;
@@ -160,28 +170,28 @@ function makeBosses(g) {
     let start = null;
     for (let n = 0; n < 180; n++) {
       const t = Math.round((123 + random(g) * 213) / C.DT) * C.DT;
-      if (g.flights.some(f => t < f.end + 3 && t + C.BOSS_DURATION > f.start - 5)) continue;
-      if (bosses.some(b => t < b.end + 8 && t + C.BOSS_DURATION > b.start - 8)) continue;
+      if (g.flights.some(f => t < f.end + 1.5 && t + C.BOSS_DURATION > f.start - 3.2)) continue;
+      if (bosses.some(b => t < b.end + 3.2 && t + C.BOSS_DURATION > b.start - 3.2)) continue;
       start = t; break;
     }
     if (start === null) {
       for (let t = 121; t < 341; t += .25) {
-        if (g.flights.some(f => t < f.end + 3 && t + C.BOSS_DURATION > f.start - 5)) continue;
-        if (bosses.some(b => t < b.end + 8 && t + C.BOSS_DURATION > b.start - 8)) continue;
+        if (g.flights.some(f => t < f.end + 1.5 && t + C.BOSS_DURATION > f.start - 3.2)) continue;
+        if (bosses.some(b => t < b.end + 3.2 && t + C.BOSS_DURATION > b.start - 3.2)) continue;
         start = Math.round(t / C.DT) * C.DT; break;
       }
     }
     if (start === null) throw new Error('No room for three boss encounters');
     const boss = { id: i, start, end: start + C.BOSS_DURATION, remnantAdded: false, shots: [] };
-    for (let n = 0; n < 3; n++) {
-      const shot = { id: n, at: start + [3.0, 7.6, 12.1][n],
-        y: n === 1 ? 186 : 58 + random(g) * 10, r: 11 + random(g) * 3,
+    for (let n = 0; n < C.BOSS_SHOTS; n++) {
+      const shot = { id: n, at: start + .8 + n * C.SHOT_INTERVAL,
+        y: n % 2 ? 300 : 58 + random(g) * 10, r: 11 + random(g) * 3,
         factor: .2 + random(g) * .48 };
       shot.cues = [0, C.SEPARATION].map(offset => {
         const t = bulletImpact(shot, offset);
         return { earliest: t - .31, latest: t - .19, at: t - .25 };
       });
-      if (n !== 1) for (const [slot, offset] of [0, C.SEPARATION].entries()) {
+      if (n % 2 === 0) for (const [slot, offset] of [0, C.SEPARATION].entries()) {
         const cue = shot.cues[slot];
         for (let launch = cue.earliest - C.DT; launch <= cue.latest + C.DT; launch += C.DT)
           for (let t = launch; t < launch + FLIGHT; t += C.DT)
@@ -208,17 +218,28 @@ export function createGame(seed = 1, leader = 0) {
       respawnAt: 0, shieldUntil: 0, spawnAt: -10,
       jumpUntil: -1, deaths: 0, jumps: 0,
       held: false, flyY: 250, flyLane: 0, boosts: 0, lastOrb: -1, orbAt: -10,
+      spawnAssist: false, flyAssistHeld: false, respawnHoldUntil: -1,
     })),
   };
   for (let minute = 0; minute < 6; minute++) g.flights.push(makeFlight(g, minute));
   g.bosses = makeBosses(g);
+  const flipFree = t => t >= 2 && t + C.FLIP_DURATION < C.DURATION - 2
+    && g.flights.every(f => t >= f.end + 1.5 || t + C.FLIP_DURATION <= f.start - 1.5)
+    && g.bosses.every(b => t >= b.end + 3.2 || t + C.FLIP_DURATION <= b.start - 1.5)
+    && g.flips.every(other => Math.abs(t - other) > C.FLIP_DURATION + 3);
+  // A gravity gate follows (or precedes) each flight with a 1.5 s transition.
+  for (const f of g.flights) {
+    const after = f.end + 1.5, before = f.start - 1.5 - C.FLIP_DURATION;
+    const t = flipFree(after) ? after : flipFree(before) ? before : null;
+    if (t !== null) g.flips.push(Math.round(t / C.DT) * C.DT);
+  }
   let flipTime = 20 + random(g) * 10;
   while (flipTime < C.DURATION - 6) {
-    if (g.flights.every(f => flipTime < f.start - 3 || flipTime > f.end + 2)
-      && g.bosses.every(b => flipTime < b.start - 3 || flipTime > b.end + 3))
+    if (flipFree(flipTime))
       g.flips.push(Math.round(flipTime * 120) / 120);
     flipTime += 26 + random(g) * 10;
   }
+  g.flips.sort((a, b) => a - b);
   fillTrack(g);
   return g;
 }
@@ -362,7 +383,7 @@ export function makeGroup(g, at) {
   g.groupId++;
   return { group, parts };
 }
-function stairLanding(parts, index, offset, launch, fromHeight, orb) {
+function stairLanding(parts, index, offset, launch, fromHeight, orbs, expectedOrb) {
   const p = { y: fromHeight, vy: 0, grounded: true };
   if (!supported(p, distanceAt(launch) + offset, parts)) return null;
   p.vy = C.JUMP; p.grounded = false;
@@ -370,58 +391,94 @@ function stairLanding(parts, index, offset, launch, fromHeight, orb) {
   for (let n = 1; n < 235; n++) {
     const t = launch + n * C.DT, x = distanceAt(t) + offset;
     moveRunner(p, x, parts);
-    if (orb && !boosted && touchesOrb(x, p.y, { ...orb, r: orb.r - 5 })) { p.vy = C.BOOST; boosted = true; }
+    for (const orb of orbs) if (touchesOrb(x, p.y, { ...orb, r: orb.r - 5 })) {
+      if (orb.id !== expectedOrb?.id) return null;
+      if (!boosted) { p.vy = orb.power; boosted = true; }
+    }
     if (parts.some(o => hits(x, p.y, o))) return null;
-    if (p.grounded) return p.y === parts[index].h && boosted === !!orb ? t : null;
+    if (p.grounded) return p.y === parts[index].h && boosted === !!expectedOrb ? t : null;
   }
   return null;
 }
 export function makeStairs(g, at) {
-  const tier = difficultyAt(at).tier, height = [112, 178, 414, 156, 103].map(h => h + tier * 3);
-  const spacing = .87 + random(g) * .035;
-  const times = [0, spacing, spacing + .94, spacing + 1.72, spacing + 2.65];
-  const spans = [.62, .64, .33, .72, .58];
-  const pillars = times.map((t, i) => ({
-    id: g.obstacleId + i + 1, group: g.groupId + 1, kind: 'step',
-    x: distanceAt(at + t) + C.SEPARATION,
-    w: distanceAt(at + t + spans[i]) - distanceAt(at + t), h: height[i],
-    cells: Math.round(height[i] / 60),
-  }));
-  const parts = [...pillars];
-  for (let i = 0; i < pillars.length - 1; i++) {
-    const x = pillars[i].x + pillars[i].w;
-    parts.push({ id: g.obstacleId + pillars.length + i + 1, group: g.groupId + 1,
-      kind: 'pit', x, w: pillars[i + 1].x - x, h: 29 });
-  }
-  const orb = { id: g.groupId + 1, x: pillars[2].x - C.BASE_SPEED * speedAt(at + times[2]) * .28,
-    y: pillars[1].h + 155, r: C.ORB_RADIUS };
-  const stages = [], lastLand = [0, 0];
-  for (const [stageIndex, i] of [0, 1, 3, 4].entries()) {
-    const cues = [];
-    for (const [slot, offset] of [0, C.SEPARATION].entries()) {
-      const edge = timeAtDistance(pillars[i === 3 ? 2 : i].x - C.HIT_HALF - offset);
-      const middle = edge - (i === 3 ? .42 : .39), width = .12;
-      const cue = { earliest: middle - width / 2, latest: middle + width / 2, at: middle };
-      if (cue.earliest < lastLand[slot] + .035) return null;
-      let latestLand = 0;
-      // Include a complete physics-step margin at BOTH ends of every window.
-      for (let t = cue.earliest - C.DT; t <= cue.latest + C.DT * 1.01; t += C.DT) {
-        const land = stairLanding(parts, i, offset, t, stageIndex ? pillars[[0, 1, 3][stageIndex - 1]].h : 0, i === 3 ? orb : null);
-        if (land === null) return null;
-        latestLand = Math.max(latestLand, land);
-      }
-      lastLand[slot] = latestLand; cues.push(cue);
+  const tier = difficultyAt(at).tier;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const count = 3 + Math.floor(random(g) * 4), peak = 1 + Math.floor(random(g) * (count - 2));
+    const landable = Array.from({ length: count }, (_, i) => i).filter(i => i !== peak);
+    const optional = landable.filter(i => i && i !== peak + 1);
+    const wanted = Math.min(4, landable.length, 1 + Math.floor(random(g) * 4));
+    const boosted = new Set([peak + 1]);
+    for (let i = 0; i < wanted - 1 && optional.length; i++) {
+      const choice = Math.floor(random(g) * optional.length);
+      boosted.add(optional.splice(choice, 1)[0]);
     }
-    stages.push({ index: stageIndex, fromHeight: stageIndex ? pillars[[0, 1, 3][stageIndex - 1]].h : 0, height: pillars[i].h, cues });
+    const height = [98 + random(g) * 24 + tier * 2];
+    for (let i = 1; i < count; i++) {
+      if (i < peak) height.push(height[i - 1] + 42 + random(g) * 16);
+      else if (i === peak) height.push(height[i - 1] + 230 + random(g) * 12);
+      else if (i === peak + 1) height.push(164 + random(g) * 18 + tier * 2);
+      else height.push(Math.max(90, height[i - 1] - 30 - random(g) * 13));
+    }
+    const times = [0];
+    for (let i = 1; i < count; i++)
+      times.push(times[i - 1] + (i === peak ? .9 : i === peak + 1 ? .7 : boosted.has(i) ? 1.45 : .9));
+    const spans = height.map((_h, i) => i === peak ? .32 : .79);
+    const pillars = times.map((t, i) => ({
+      id: g.obstacleId + i + 1, group: g.groupId + 1, kind: 'step',
+      x: distanceAt(at + t) + C.SEPARATION,
+      w: distanceAt(at + t + spans[i]) - distanceAt(at + t), h: height[i],
+      cells: Math.round(height[i] / 60),
+    }));
+    const parts = [...pillars];
+    for (let i = 0; i < count - 1; i++) {
+      const x = pillars[i].x + pillars[i].w;
+      parts.push({ id: g.obstacleId + count + i + 1, group: g.groupId + 1,
+        kind: 'pit', x, w: pillars[i + 1].x - x, h: 29 });
+    }
+    const orbs = [], stages = [], lastLand = [0, 0];
+    let valid = true;
+    for (const [stageIndex, i] of landable.entries()) {
+      const prior = stageIndex ? landable[stageIndex - 1] : -1;
+      const fromHeight = prior < 0 ? 0 : pillars[prior].h;
+      const launchX = prior < 0 ? null : distanceAt(at + times[prior] + .48) + C.SEPARATION;
+      let orb = null;
+      if (boosted.has(i)) {
+        orb = { id: `stair-${g.groupId + 1}-${i}`, group: g.groupId + 1,
+          x: distanceAt(at + times[prior] + .64) + C.SEPARATION,
+          y: fromHeight + 150, r: C.ORB_RADIUS, power: i === peak + 1 ? C.BOOST : 1280 };
+        orbs.push(orb);
+      }
+      const cues = [];
+      for (const [slot, offset] of [0, C.SEPARATION].entries()) {
+        const middle = prior < 0 ? timeAtDistance(pillars[0].x - C.HIT_HALF - offset) - .39
+          : timeAtDistance(launchX - offset);
+        const cue = { earliest: middle - .06, latest: middle + .06, at: middle };
+        if (cue.earliest < lastLand[slot] + .035) { valid = false; break; }
+        let latestLand = 0;
+        for (let t = cue.earliest - C.DT; t <= cue.latest + C.DT * 1.01; t += C.DT) {
+          const land = stairLanding(parts, i, offset, t, fromHeight, orbs, orb);
+          if (land === null) { valid = false; break; }
+          latestLand = Math.max(latestLand, land);
+        }
+        if (!valid) break;
+        lastLand[slot] = latestLand; cues.push(cue);
+      }
+      if (!valid) break;
+      stages.push({ index: stageIndex, pillar: i, fromHeight, height: pillars[i].h,
+        x: pillars[i].x, w: pillars[i].w, orbId: orb?.id ?? null, cues });
+    }
+    if (!valid) continue;
+    const last = pillars[count - 1];
+    const ends = [0, C.SEPARATION].map(offset => timeAtDistance(last.x + last.w + C.HIT_HALF - offset) + Math.sqrt(2 * last.h / C.GRAVITY) + .06);
+    const starts = stages[0].cues.map(c => c.earliest);
+    if (!roadAllowed(g, Math.min(...starts), Math.max(...ends))) continue;
+    const group = { id: ++g.groupId, action: 'stairs', at, tier, count: parts.length, x: pillars[0].x,
+      w: last.x + last.w - pillars[0].x, h: Math.max(...height), pillarCount: count, orbCount: orbs.length,
+      stages, cues: stages[0].cues, starts, ends };
+    g.obstacleId += parts.length;
+    return { group, parts, orbs };
   }
-  const last = pillars[pillars.length - 1];
-  const ends = [0, C.SEPARATION].map(offset => timeAtDistance(last.x + last.w + C.HIT_HALF - offset) + Math.sqrt(2 * last.h / C.GRAVITY) + .06);
-  const starts = stages[0].cues.map(c => c.earliest);
-  if (!roadAllowed(g, Math.min(...starts), Math.max(...ends))) return null;
-  const group = { id: ++g.groupId, action: 'stairs', at, tier, count: parts.length, x: pillars[0].x,
-    w: last.x + last.w - pillars[0].x, h: pillars[2].h, stages, cues: stages[0].cues, starts, ends };
-  g.obstacleId += parts.length;
-  return { group, parts, orb };
+  return null;
 }
 // Simulate the exact impulse/circle contact used in step(). A single ordinary
 // jump cannot clear the tower: its height exceeds the unboosted jump apex.
@@ -502,6 +559,7 @@ export function fillTrack(g) {
     if (next) {
       g.groups.push(next.group); g.obstacles.push(...next.parts);
       if (next.orb) g.orbs.push(next.orb);
+      if (next.orbs) g.orbs.push(...next.orbs);
       g.roadReady = next.group.ends;
     }
     const { gap } = difficultyAt(g.nextAt);
@@ -527,6 +585,7 @@ export function jump(g, id) {
 export function setControl(g, id, held) {
   const p = g.players[id];
   if (!p || typeof held !== 'boolean') return;
+  if (p.spawnAssist) p.spawnAssist = false;
   const pressed = held && !p.held;
   p.held = held;
   if (pressed) jump(g, id);
@@ -536,6 +595,7 @@ export function kill(g, id) {
   if (!p?.alive || p.shieldUntil > g.elapsed || g.phase !== 'running') return;
   p.alive = false; p.deathAt = g.elapsed; p.respawnAt = g.elapsed + C.RESPAWN;
   p.vy = 0; p.jumpUntil = -1; p.held = false; p.deaths++;
+  p.spawnAssist = false; p.respawnHoldUntil = -1;
   emit(g, 'death', id);
 }
 export function step(g, inputs = []) {
@@ -567,7 +627,7 @@ export function step(g, inputs = []) {
       emit(g, 'flight-enter', -1);
     } else {
       g.flightActive = -1; g.flightsCompleted++; g.flightExitAt = g.elapsed;
-      for (const p of g.players) { p.y = 0; p.vy = 0; p.grounded = true; p.jumpUntil = -1; }
+      for (const p of g.players) { p.y = 0; p.vy = 0; p.grounded = true; p.jumpUntil = -1; p.spawnAssist = false; }
       emit(g, 'flight-exit', -1);
     }
   }
@@ -580,16 +640,26 @@ export function step(g, inputs = []) {
     if (!p.alive) {
       if (g.elapsed + 1e-7 >= p.respawnAt) {
         p.alive = true; p.y = 0; p.vy = 0; p.grounded = true; p.spawnAt = g.elapsed;
+        p.respawnHoldUntil = -1;
         if (activeFlight(g)) {
           const f = activeFlight(g);
-          p.flyY = flightCorridor(f, flightProgress(f, g.elapsed, p.offset), p.flyLane).center;
+          p.flyY = flightSpawnY(f, flightProgress(f, g.elapsed, p.offset), p.flyLane);
+          p.spawnAssist = true; p.flyAssistHeld = false;
         }
         // Exact 6 second respawn, followed by a visible shield through any
         // obstacle already under the spawn point. No teleport into a hazard.
         p.shieldUntil = g.elapsed + C.SHIELD;
         const x = playerX(g, p);
-        if (!activeFlight(g)) for (const o of g.obstacles)
-          if (o.kind === 'step' && overlaps(x, o)) p.y = Math.max(p.y, o.h);
+        if (!activeFlight(g)) {
+          const stairs = g.groups.find(group => group.action === 'stairs'
+            && x + C.HIT_HALF >= group.x && x - C.HIT_HALF <= group.x + group.w);
+          const platform = stairs?.stages.find(stage => stage.x + stage.w > x - C.HIT_HALF);
+          if (platform) {
+            p.y = platform.height;
+            p.respawnHoldUntil = Math.max(g.elapsed, timeAtDistance(platform.x + C.HIT_HALF - p.offset));
+            p.shieldUntil = Math.max(p.shieldUntil, Math.max(...stairs.ends) + .3);
+          }
+        }
         for (const o of activeFlight(g) ? [] : g.obstacles) {
           if (o.x < x + C.HIT_HALF && o.x + o.w > x - C.HIT_HALF)
             p.shieldUntil = Math.max(p.shieldUntil, timeAtDistance(o.x + o.w + C.HIT_HALF - p.offset) + .15);
@@ -601,11 +671,15 @@ export function step(g, inputs = []) {
     if (activeFlight(g)) {
       const f = activeFlight(g), t = flightProgress(f, g.elapsed, p.offset);
       if (g.elapsed - f.start < C.FLY_ENTRY) p.flyY = flightCorridor(f, t, p.flyLane).center;
-      else p.flyY += (p.held ? -1 : 1) * C.FLY_SPEED * C.DT;
+      else {
+        if (p.spawnAssist) p.flyAssistHeld = followCorridor(f, t, p.flyLane, p.flyY, p.flyAssistHeld);
+        p.flyY += (p.spawnAssist ? p.flyAssistHeld : p.held) ? -C.FLY_SPEED * C.DT : C.FLY_SPEED * C.DT;
+      }
       if (p.shieldUntil <= g.elapsed && flightClearance(f, t, p.flyLane, p.flyY) < 0) kill(g, p.id);
       continue;
     }
     if (isFlipping(g)) { p.y = 0; p.vy = 0; p.grounded = true; continue; }
+    if (p.respawnHoldUntil > g.elapsed) { p.vy = 0; p.grounded = true; p.jumpUntil = -1; continue; }
     const x = playerX(g, p);
     p.grounded = supported(p, x, g.obstacles);
     if (p.grounded && p.jumpUntil >= g.elapsed - C.DT) {
@@ -615,7 +689,7 @@ export function step(g, inputs = []) {
     moveRunner(p, x, g.obstacles);
     for (const orb of g.orbs) {
       if (p.lastOrb !== orb.id && touchesOrb(playerX(g, p), p.y, orb)) {
-        p.vy = C.BOOST; p.grounded = false; p.lastOrb = orb.id; p.boosts++; p.orbAt = g.elapsed;
+        p.vy = orb.power ?? C.BOOST; p.grounded = false; p.lastOrb = orb.id; p.boosts++; p.orbAt = g.elapsed;
         emit(g, 'boost', p.id);
       }
     }
@@ -641,11 +715,11 @@ export function step(g, inputs = []) {
 }
 export function jumpCue(g, id) {
   const p = g.players[id];
-  if (g.phase !== 'running' || !p?.alive || !p.grounded || isFlipping(g) || activeFlight(g)) return null;
+  if (g.phase !== 'running' || !p?.alive || !p.grounded || p.respawnHoldUntil > g.elapsed || isFlipping(g) || activeFlight(g)) return null;
   const x = playerX(g, p);
   const boss = activeBoss(g);
   if (boss) for (const shot of boss.shots) {
-    if (shot.id === 1) continue;
+    if (shot.id % 2) continue;
     const cue = shot.cues[p.offset === 0 ? 0 : 1];
     if (g.elapsed > cue.latest || g.elapsed < shot.at) continue;
     return { ...cue, group: `boss-${boss.id}`, key: `boss-${boss.id}:${shot.id}`,
@@ -659,7 +733,9 @@ export function jumpCue(g, id) {
   if (group.action === 'stairs' && !stage) return null;
   const cue = stage ? stage.cues[slot] : group.cues[slot];
   if (g.elapsed > cue.latest) return null;
+  const orbId = stage?.orbId ?? (group.action === 'boost' ? group.id : null);
   return { ...cue, group: group.id, key: `${group.id}:${stage?.index ?? 0}`, height: stage?.fromHeight ?? 0, x: distanceAt(cue.at) + p.offset,
+    orbId,
     active: g.elapsed >= cue.earliest && g.elapsed <= cue.latest };
 }
 export function botWantsJump(g, id) {
