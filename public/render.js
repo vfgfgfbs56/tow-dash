@@ -95,9 +95,12 @@ export class Renderer {
         }
         for (const orb of game.orbs) {
           const x = ox + (orb.x - game.distance) * s;
-          if (x < -100 || x > w + 100) continue;
+          if (x + orb.r * s < 0 || x - orb.r * s > w) continue;
           this.orb(orb, x, s, now, game.players[self].lastOrb === orb.id,
             selfCue?.orbId === orb.id && selfCue.at - game.elapsed < 1);
+          const slot = game.players[self].offset === 0 ? 0 : 1;
+          const markX = ox + ((orb.launchXs?.[slot] ?? orb.x - C.BASE_SPEED * speedAt(game.elapsed) * .16) - game.distance) * s;
+          this.orbLaunchMarker(orb, markX, s, now, w);
         }
         ctx.restore();
       }
@@ -354,6 +357,20 @@ export class Renderer {
     }
     c.restore();
   }
+  orbLaunchMarker(orb, worldX, s, now, viewportWidth) {
+    const c = this.ctx, x = Math.max(9 * s, Math.min(viewportWidth - 9 * s, worldX));
+    const top = -(orb.launchHeight ?? 0) * s, dotY = top - 48 * s;
+    const blink = this.reduced ? .85 : .45 + .45 * (1 + Math.sin(now * 5)) / 2;
+    c.save();
+    c.globalAlpha = worldX === x ? .82 : .45;
+    c.strokeStyle = '#a7a7ad'; c.lineWidth = Math.max(1.5, 2 * s);
+    c.beginPath(); c.moveTo(x, top - 2 * s); c.lineTo(x, dotY + 8 * s); c.stroke();
+    c.globalAlpha *= blink;
+    c.fillStyle = '#d6d6da'; c.beginPath(); c.arc(x, dotY, 6 * s, 0, Math.PI * 2); c.fill();
+    c.strokeStyle = '#ffdb63'; c.lineWidth = Math.max(1.5, 2 * s);
+    c.beginPath(); c.arc(x, dotY, 9 * s, 0, Math.PI * 2); c.stroke();
+    c.restore();
+  }
   drawBoss(game, ox, ground, side, s, base, now) {
     const c = this.ctx, boss = activeBoss(game);
     if (!boss) return;
@@ -425,15 +442,12 @@ export class Renderer {
       for (const q of [.25, .5, .75]) c.fillRect(x + w * q - 3 * s, ground - h * .62, 6 * s, 5 * s);
       c.restore();
     } else if (o.kind === 'step') {
-      c.fillStyle = '#090a0d'; c.fillRect(x, ground - h, w, h);
-      c.strokeStyle = '#f1f1f5'; c.lineWidth = Math.max(1.5, 3 * s);
-      const rows = Math.max(1, o.cells || 1), row = h / rows;
-      for (let i = 0; i < rows; i++) {
-        const yy = ground - h + i * row;
-        c.strokeRect(x + c.lineWidth / 2, yy + c.lineWidth / 2, w - c.lineWidth, row - c.lineWidth);
-        c.fillStyle = '#f2f2f5';
-        const glint = Math.min(row * .18, w * .13);
-        c.fillRect(x + (w - glint) / 2, yy + (row - glint) / 2, glint, glint);
+      c.fillStyle = '#050505'; c.fillRect(x, ground - h, w, h);
+      c.strokeStyle = '#f1f1f5'; c.lineWidth = Math.max(1.5, 2.8 * s);
+      const tile = C.SIZE * s, rows = Math.round(o.h / C.SIZE), cols = Math.round(o.w / C.SIZE);
+      for (let row = 0; row < rows; row++) for (let col = 0; col < cols; col++) {
+        c.strokeRect(x + col * tile + c.lineWidth / 2, ground - h + row * tile + c.lineWidth / 2,
+          tile - c.lineWidth, tile - c.lineWidth);
       }
     } else if (o.kind === 'pit') {
       c.strokeStyle = '#f2f2f5'; c.lineWidth = Math.max(1.5, 2.5 * s);

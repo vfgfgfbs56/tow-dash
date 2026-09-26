@@ -242,12 +242,19 @@ test('stair tops support both players, allow repeated jumps and a safe descent o
     }
     for (const p of g.players) {
       assert.equal(p.deaths, 0); assert.equal(p.y, 0); assert.equal(p.grounded, true);
-      assert.deepEqual([...landed[p.id]].sort((a,b) => a-b), pack.group.stages.map(s => s.height).sort((a,b) => a-b));
+      assert.deepEqual([...landed[p.id]].sort((a,b) => a-b), [...new Set(pack.group.stages.map(s => s.height))].sort((a,b) => a-b));
       assert.equal(p.jumps, pack.group.stages.length); assert.equal(p.boosts, pack.orbs.length);
     }
     const still = { y: pack.parts[0].h, vy: 0, grounded: true };
     moveRunner(still, pack.parts[0].x + 80, pack.parts);
     assert.equal(still.y, pack.parts[0].h); assert.equal(still.grounded, true);
+    for (const block of pack.parts.filter(o => o.kind === 'step')) {
+      assert.equal(block.w % C.SIZE, 0); assert.equal(block.h % C.SIZE, 0);
+    }
+    for (const orb of pack.orbs) {
+      assert.equal(orb.launchXs.length, 2);
+      assert.ok(pack.group.stages.some(stage => stage.orbId === orb.id && stage.fromHeight === orb.launchHeight));
+    }
   }
   const g = emptyGame(), pack = makeStairs(g, 3);
   g.groups = [pack.group]; g.obstacles = pack.parts;

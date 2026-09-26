@@ -1,6 +1,6 @@
 // Shared deterministic, fixed-step simulation. Cloudflare is authoritative.
 export const C = Object.freeze({
-  VERSION: 6, DT: 1 / 120, DURATION: 360, COUNTDOWN: 5, RESPAWN: 6,
+  VERSION: 7, DT: 1 / 120, DURATION: 360, COUNTDOWN: 5, RESPAWN: 6,
   SIZE: 64, HIT_HALF: 26, GRAVITY: 2800, JUMP: 1080,
   BASE_SPEED: 400, START_SPEED: 2, SPEED_STEP: 0.1,
   SPEED_EVERY: 10, SEPARATION: 172, SHIELD: 1.25,
@@ -419,6 +419,8 @@ export function makeStairs(g, at) {
       else if (i === peak + 1) height.push(164 + random(g) * 18 + tier * 2);
       else height.push(Math.max(90, height[i - 1] - 30 - random(g) * 13));
     }
+    // Every visible segment is an actual 64×64 square, including collision.
+    for (let i = 0; i < count; i++) height[i] = Math.max(2, Math.round(height[i] / C.SIZE)) * C.SIZE;
     const times = [0];
     for (let i = 1; i < count; i++)
       times.push(times[i - 1] + (i === peak ? .9 : i === peak + 1 ? .7 : boosted.has(i) ? 1.45 : .9));
@@ -426,8 +428,8 @@ export function makeStairs(g, at) {
     const pillars = times.map((t, i) => ({
       id: g.obstacleId + i + 1, group: g.groupId + 1, kind: 'step',
       x: distanceAt(at + t) + C.SEPARATION,
-      w: distanceAt(at + t + spans[i]) - distanceAt(at + t), h: height[i],
-      cells: Math.round(height[i] / 60),
+      w: Math.max(C.SIZE, Math.round((distanceAt(at + t + spans[i]) - distanceAt(at + t)) / C.SIZE) * C.SIZE),
+      h: height[i],
     }));
     const parts = [...pillars];
     for (let i = 0; i < count - 1; i++) {
@@ -464,6 +466,10 @@ export function makeStairs(g, at) {
         lastLand[slot] = latestLand; cues.push(cue);
       }
       if (!valid) break;
+      if (orb) {
+        orb.launchXs = cues.map((cue, slot) => distanceAt(cue.at) + [0, C.SEPARATION][slot]);
+        orb.launchHeight = fromHeight;
+      }
       stages.push({ index: stageIndex, pillar: i, fromHeight, height: pillars[i].h,
         x: pillars[i].x, w: pillars[i].w, orbId: orb?.id ?? null, cues });
     }
@@ -518,6 +524,8 @@ export function makeBoostGroup(g, at, variant) {
   if (!roadAllowed(g, enter, leave)) return null;
   const group = { id: ++g.groupId, action: 'boost', at, tier, count: 1, x: tower.x, w, h,
     cues: proof.map(p => ({ earliest: p.earliest, latest: p.latest, at: p.middle })) };
+  orb.launchXs = group.cues.map((cue, slot) => distanceAt(cue.at) + [0, C.SEPARATION][slot]);
+  orb.launchHeight = 0;
   g.obstacleId++;
   return { group, parts: [tower], orb };
 }
