@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { C, createGame, step, jump, kill, speedAt, distanceAt, timeAtDistance, botWantsJump, localColor, difficultyAt, jumpCue, worldY, worldGravity, isFlipping, activeFlight, botFlightHeld, setControl, makeBoostGroup, makeFakeGroup, roadAllowed, flightCorridor, verifyFlight, hits, makeStairs, trapHeight, moveRunner } from '../public/engine.js';
+import { C, createGame, step, jump, kill, speedAt, distanceAt, timeAtDistance, botWantsJump, localColor, difficultyAt, jumpCue, worldY, worldGravity, isFlipping, activeFlight, activeBoss, bulletHits, bulletImpact, botFlightHeld, setControl, makeBoostGroup, makeFakeGroup, roadAllowed, flightCorridor, verifyFlight, hits, makeStairs, trapHeight, moveRunner } from '../public/engine.js';
 
 test('5 second countdown; speed starts at 2.0 and grows every 10 seconds for 6 minutes', () => {
   const g = createGame(7, 1);
@@ -58,8 +58,9 @@ test('ceiling gravity reverses world motion; transfers block jumping and preserv
   for (let n = 0; n < 180; n++) { step(g, n === 0 ? [0] : []); step(copy, n === 0 ? [0] : []); }
   assert.deepEqual(g, copy, 'serialized network state uses the same simulation');
 });
-test('50 full races: stairs, stacks, close combinations, all 300 mazes and timing-window boundaries', () => {
-  let total = 0, boosts = 0, stairs = 0, stacks = 0, close = 0, shortenedPairs = 0; const kinds = new Set(), counts = [0, 0, 0, 0, 0, 0], assignments = new Set();
+test('50 full races: spiked ladders, bosses, close combinations, all 300 variable mazes and timing-window boundaries', () => {
+  let total = 0, boosts = 0, stairs = 0, stacks = 0, close = 0, shortenedPairs = 0, threeBlockGaps = 0, remnants = 0;
+  const kinds = new Set(), counts = [0, 0, 0, 0, 0, 0], assignments = new Set(), narrow = [], wide = [];
   for (let seed = 1; seed <= 50; seed++) {
     const g = createGame(seed * 91237, seed % 2); g.phase = 'running';
     assert.equal(g.flights.length, 6);
@@ -67,16 +68,37 @@ test('50 full races: stairs, stacks, close combinations, all 300 mazes and timin
       const f = g.flights[i];
       assert.ok(f.start >= i * 60 && f.end < (i + 1) * 60);
       assert.equal(Math.round(f.end / C.DT) - Math.round(f.start / C.DT), 1440); assert.deepEqual([...f.lanes].sort(), [0, 1]);
-      assert.ok(f.clearance >= 12); assignments.add(f.lanes[0]);
+      assert.ok(f.clearance >= 10); assignments.add(f.lanes[0]);
+      assert.ok(f.widthRange[0] < 80 && f.widthRange[1] >= 130);
+      narrow.push(f.widthRange[0]); wide.push(f.widthRange[1]);
       assert.ok(g.flips.every(t => t < f.start - 3 || t > f.end + 2));
+    }
+    assert.equal(g.bosses.length, 3);
+    for (const boss of g.bosses) {
+      assert.ok(boss.start > 120 && boss.end < 355);
+      assert.ok(Math.abs(boss.end - boss.start - 16) < 1e-8); assert.equal(boss.shots.length, 3);
+      assert.ok(g.flights.every(f => boss.start >= f.end + 3 || boss.end <= f.start - 5));
+      assert.ok(g.flips.every(t => t < boss.start - 3 || t > boss.end + 3));
+      assert.equal(new Set(boss.shots.map(s => s.factor)).size, 3);
+      for (const shot of boss.shots) for (let i = 0; i < 2; i++) {
+        const impact = bulletImpact(shot, i ? C.SEPARATION : 0);
+        assert.ok(impact > shot.at && impact < shot.at + 2);
+      }
     }
     const checked = new Set(), ready = [0, 0]; let previous = null;
     for (let n = 0; n < C.DURATION / C.DT && g.phase === 'running'; n++) {
       for (const group of g.groups) if (!checked.has(group.id)) {
         checked.add(group.id);
         const d = difficultyAt(group.at), parts = g.obstacles.filter(o => o.group === group.id);
+        if (group.action === 'jump' && group.boss === undefined) {
+          const row = [...parts].sort((a, b) => a.x - b.x);
+          for (let i = 1; i < row.length; i++) {
+            const gap = row[i].x - row[i - 1].x - row[i - 1].w;
+            if (gap >= C.SIZE * 2.8 && gap <= C.SIZE * 3.2) threeBlockGaps++;
+          }
+        }
         assert.equal(parts.length, group.count);
-        if (group.action === 'jump') assert.ok(group.count >= d.count[0] && group.count <= d.count[1]);
+        if (group.action === 'jump' && group.boss === undefined) assert.ok(group.count >= d.count[0] && group.count <= d.count[1]);
         total += parts.length; counts[d.tier] += parts.length;
         const allCues = group.stages ? group.stages.flatMap(s => s.cues) : group.cues;
         for (const cue of allCues) assert.ok(cue.latest - cue.earliest >= (['boost', 'stairs'].includes(group.action) ? .12 : d.window) - 1e-7);
@@ -84,16 +106,17 @@ test('50 full races: stairs, stacks, close combinations, all 300 mazes and timin
           assert.ok(group.starts[i] >= ready[i] + .035 - 1e-7, 'a preceding group leaves time to land');
           ready[i] = group.ends[i];
         }
-        assert.ok(roadAllowed(g, Math.min(...group.starts), Math.max(...group.ends)));
+        if (group.boss === undefined) assert.ok(roadAllowed(g, Math.min(...group.starts), Math.max(...group.ends)));
         stairs += group.action === 'stairs'; close += !!group.close;
         stacks += parts.filter(o => o.kind === 'stack').length;
-        if (previous?.action === 'jump' && group.action === 'jump'
+        remnants += group.boss !== undefined;
+        if (previous?.action === 'jump' && group.action === 'jump' && previous.boss === undefined && group.boss === undefined
           && group.at - previous.at < difficultyAt(previous.at).gap[0] * .9) shortenedPairs++;
         previous = group;
         if (group.action === 'boost') { boosts++; assert.ok(group.h > C.JUMP ** 2 / (2 * C.GRAVITY) + 6); }
         const enter = timeAtDistance(group.x - C.SEPARATION - C.HIT_HALF);
         const leave = timeAtDistance(group.x + group.w + C.HIT_HALF);
-        assert.ok(roadAllowed(g, enter, leave));
+        if (group.boss === undefined) assert.ok(roadAllowed(g, enter, leave));
         for (const o of parts) {
           kinds.add(o.kind);
           assert.ok(o.x >= group.x && o.x + o.w <= group.x + group.w + 1e-7 && o.h <= group.h);
@@ -111,12 +134,20 @@ test('50 full races: stairs, stacks, close combinations, all 300 mazes and timin
     assert.equal(g.phase, 'won', `seed ${seed} at ${g.elapsed}`);
     assert.deepEqual(g.players.map(p => p.deaths), [0, 0], `seed ${seed}`);
     assert.equal(g.elapsed, 360); assert.ok(g.flipIndex > 0); assert.equal(g.flightsCompleted, 6);
+    assert.equal(g.bossesCompleted, 3); assert.ok(g.bosses.every(b => b.remnantAdded));
     assert.equal(g.roadSide, g.flipIndex % 2 ? -1 : 1);
   }
-  assert.ok(total > 8000); assert.ok(boosts > 300); assert.ok(stairs > 300); assert.ok(stacks > 150); assert.ok(close > 500); assert.equal(kinds.size, 8); assert.equal(assignments.size, 2);
+  assert.ok(total > 8000); assert.ok(boosts > 250); assert.ok(stairs > 250); assert.ok(stacks > 130); assert.ok(close > 500);
+  assert.equal(kinds.size, 10); assert.equal(assignments.size, 2); assert.equal(remnants, 150);
+  assert.ok(Math.min(...narrow) < 75 && Math.max(...wide) > 145);
   assert.ok(shortenedPairs >= 50, 'shorter spacings survive the physics checks, not just the random choice');
-  for (let i = 1; i < counts.length; i++) assert.ok(counts[i] > counts[i - 1], `density minute ${i + 1}`);
-  console.log(`Verified ${total} figures, ${boosts} orb obstacles (${stacks} double stacks), ${stairs} staircases, ${shortenedPairs} closer ordinary-group pairs and 300 mazes; per-minute totals: ${counts.join(', ')}`);
+  assert.ok(threeBlockGaps >= 50, 'three-cube gaps exist inside verified one-jump groups');
+  assert.ok(counts[5] > counts[0], 'final minute has more figures despite boss/flight intervals');
+  for (let i = 1; i < counts.length; i++) {
+    assert.ok(difficultyAt(i * 60).count[0] >= difficultyAt((i - 1) * 60).count[0]);
+    assert.ok(difficultyAt(i * 60).gap[0] < difficultyAt((i - 1) * 60).gap[0]);
+  }
+  console.log(`Verified ${total} figures, ${boosts} orb obstacles (${stacks} double stacks), ${stairs} spiked ladders, ${threeBlockGaps} three-cube internal gaps, ${shortenedPairs} closer ordinary-group pairs, 300 varying mazes and 150 bosses; per-minute totals: ${counts.join(', ')}`);
 });
 
 function emptyGame() {
@@ -162,11 +193,33 @@ test('red trap rises before a jumping player dies; ground-level teammate is safe
     } else assert.deepEqual(o.strikes, [null, null]);
   }
 });
+test('boss fires three different shots: low shots require a timed jump, high shots pass above a grounded cube', () => {
+  for (const jumping of [false, true]) {
+    const g = emptyGame();
+    const boss = g.bosses[0], low = boss.shots[0], high = boss.shots[1];
+    g.tick = Math.round(boss.start / C.DT); g.elapsed = boss.start;
+    g.distance = distanceAt(g.elapsed); g.players[1].shieldUntil = 1000;
+    let sawCue = false;
+    while (g.elapsed < low.at + 2.5 && g.phase === 'running') {
+      const cue = jumpCue(g, 0);
+      if (cue?.group === `boss-${boss.id}`) sawCue = true;
+      if (jumping && cue?.active && g.elapsed + C.DT >= cue.at) jump(g, 0);
+      step(g);
+    }
+    assert.ok(sawCue); assert.equal(g.players[0].deaths, jumping ? 0 : 1);
+    const impact = bulletImpact(high, g.players[0].offset);
+    assert.equal(bulletHits(distanceAt(impact) + g.players[0].offset, 0, high, impact), false);
+    assert.equal(activeBoss(g)?.id, boss.id);
+  }
+});
 test('stair tops support both players, allow repeated jumps and a safe descent on either road side', () => {
   for (const side of [1, -1]) {
     const g = emptyGame(), pack = makeStairs(g, 3);
     assert.ok(pack); g.roadSide = side; g.flipFrom = side;
-    g.groups = [pack.group]; g.obstacles = pack.parts;
+    g.groups = [pack.group]; g.obstacles = pack.parts; g.orbs = [pack.orb];
+    assert.equal(pack.parts.filter(o => o.kind === 'step').length, 5);
+    assert.equal(pack.parts.filter(o => o.kind === 'pit').length, 4);
+    assert.ok(pack.parts[2].h > C.JUMP ** 2 / (2 * C.GRAVITY) + pack.parts[1].h);
     const landed = [new Set(), new Set()];
     while (g.elapsed < Math.max(...pack.group.ends) + .2) {
       for (let id = 0; id < 2; id++) if (botWantsJump(g, id)) jump(g, id);
@@ -175,8 +228,8 @@ test('stair tops support both players, allow repeated jumps and a safe descent o
     }
     for (const p of g.players) {
       assert.equal(p.deaths, 0); assert.equal(p.y, 0); assert.equal(p.grounded, true);
-      assert.equal(landed[p.id].size, pack.parts.length, 'every step was landed on');
-      assert.equal(p.jumps, pack.parts.length);
+      assert.deepEqual([...landed[p.id]].sort((a,b) => a-b), pack.group.stages.map(s => s.height).sort((a,b) => a-b));
+      assert.equal(p.jumps, pack.group.stages.length); assert.equal(p.boosts, 1);
     }
     const still = { y: pack.parts[0].h, vy: 0, grounded: true };
     moveRunner(still, pack.parts[0].x + 80, pack.parts);

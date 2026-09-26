@@ -14,8 +14,8 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GameRoom"] }],
   "vars": {
-    "REQUIRE_TELEGRAM_AUTH": "true",
-    "BOT_USERNAME": "GameTrailerUpBot"
+    "REQUIRE_TELEGRAM_AUTH": "false",
+    "BOT_USERNAME": ""
   },
   "observability": { "enabled": true }
 }

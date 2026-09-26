@@ -1,4 +1,4 @@
-import { C, FLIGHT, speedAt, distanceAt, timeAtDistance, localColor, jumpCue, activeFlight, flightCorridor, trapHeight } from './engine.js';
+import { C, FLIGHT, speedAt, distanceAt, timeAtDistance, localColor, jumpCue, activeFlight, activeBoss, bulletX, flightCorridor, trapHeight } from './engine.js';
 
 export class Renderer {
   constructor(canvas) {
@@ -102,6 +102,7 @@ export class Renderer {
     }
     ctx.globalAlpha = 1;
     if (game) {
+      if (active) this.drawBoss(game, ox, ground, side, s, base, now);
       if (active && transfer === 1) {
         const cue = jumpCue(game, self);
         if (cue && cue.at - game.elapsed < 2) {
@@ -331,6 +332,41 @@ export class Renderer {
     c.beginPath(); c.arc(x, y, r * (this.reduced ? 1.3 : 1.3 + Math.sin(now * 4) * .09), 0, Math.PI * 2); c.stroke();
     c.restore();
   }
+  drawBoss(game, ox, ground, side, s, base, now) {
+    const c = this.ctx, boss = activeBoss(game);
+    if (!boss) return;
+    const age = game.elapsed - boss.start, left = boss.end - game.elapsed;
+    const enter = Math.min(1, age / .65), exit = Math.min(1, left / .8);
+    const size = 114 * s * Math.max(.12, enter * exit);
+    const x = this.w * .87 + (1 - enter) * this.w * .2;
+    const y = ground - side * 178 * s;
+    c.save(); c.translate(x, y); c.rotate(now * .4 * side);
+    c.fillStyle = '#f4f4f8'; c.strokeStyle = '#d4d4dc'; c.lineWidth = Math.max(2, 4 * s);
+    c.beginPath();
+    for (let i = 0; i < 32; i++) {
+      const a = i * Math.PI / 16, r = size * (i % 2 ? .79 : 1);
+      if (i) c.lineTo(Math.cos(a) * r, Math.sin(a) * r); else c.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+    }
+    c.closePath(); c.fill();
+    c.fillStyle = '#050508'; c.beginPath(); c.arc(0, 0, size * .54, 0, Math.PI * 2); c.fill();
+    c.fillStyle = '#ff507e'; c.fillRect(-size * .34, -size * .15, size * .2, size * .18);
+    c.fillRect(size * .14, -size * .15, size * .2, size * .18);
+    c.strokeStyle = '#fff'; c.lineWidth = Math.max(2, 4 * s);
+    c.beginPath(); c.moveTo(-size * .29, size * .2); c.lineTo(0, size * .32); c.lineTo(size * .29, size * .2); c.stroke();
+    c.restore();
+    for (const shot of boss.shots) {
+      if (game.elapsed < shot.at || game.elapsed > shot.at + 2.6) continue;
+      const bx = ox + (bulletX(shot, game.elapsed) - game.distance) * s;
+      if (bx < -80 || bx > this.w + 100) continue;
+      const by = ground - side * shot.y * s, r = shot.r * s;
+      c.save(); c.globalAlpha = .3; c.strokeStyle = shot.id === 1 ? '#fafafa' : '#ff507e';
+      c.lineWidth = Math.max(2, 5 * s); c.beginPath(); c.moveTo(bx + 8 * s, by); c.lineTo(bx + 48 * s, by); c.stroke();
+      c.globalAlpha = 1; c.fillStyle = shot.id === 1 ? '#f5f5fa' : '#ff507e';
+      c.beginPath(); c.arc(bx, by, Math.max(3 * base, r), 0, Math.PI * 2); c.fill();
+      c.strokeStyle = '#fff'; c.lineWidth = Math.max(1, 1.5 * base);
+      c.beginPath(); c.arc(bx, by, Math.max(3 * base, r), 0, Math.PI * 2); c.stroke(); c.restore();
+    }
+  }
   obstacle(o, x, ground, s, now, elapsed = 0) {
     const c = this.ctx, w = o.w * s, h = o.h * s;
     c.strokeStyle = '#f2f2f5'; c.fillStyle = '#000'; c.lineWidth = Math.max(2, 5 * s); c.lineJoin = 'miter';
@@ -367,12 +403,29 @@ export class Renderer {
       for (const q of [.25, .5, .75]) c.fillRect(x + w * q - 3 * s, ground - h * .62, 6 * s, 5 * s);
       c.restore();
     } else if (o.kind === 'step') {
-      c.fillStyle = '#101317'; c.fillRect(x, ground - h, w, h);
-      c.strokeStyle = '#b8c7d0'; c.lineWidth = Math.max(1.5, 2.5 * s);
+      c.fillStyle = '#090a0d'; c.fillRect(x, ground - h, w, h);
+      c.strokeStyle = '#f1f1f5'; c.lineWidth = Math.max(1.5, 3 * s);
+      const rows = Math.max(1, o.cells || 1), row = h / rows;
+      for (let i = 0; i < rows; i++) {
+        const yy = ground - h + i * row;
+        c.strokeRect(x + c.lineWidth / 2, yy + c.lineWidth / 2, w - c.lineWidth, row - c.lineWidth);
+        c.fillStyle = '#f2f2f5';
+        const glint = Math.min(row * .18, w * .13);
+        c.fillRect(x + (w - glint) / 2, yy + (row - glint) / 2, glint, glint);
+      }
+    } else if (o.kind === 'pit') {
+      c.strokeStyle = '#f2f2f5'; c.lineWidth = Math.max(1.5, 2.5 * s);
+      const count = Math.max(1, Math.ceil(w / (35 * s)));
+      for (let i = 0; i < count; i++) {
+        const xx = x + w * i / count, ww = w / count;
+        c.beginPath(); c.moveTo(xx + c.lineWidth / 2, ground - s);
+        c.lineTo(xx + ww / 2, ground - h + c.lineWidth);
+        c.lineTo(xx + ww - c.lineWidth / 2, ground - s); c.closePath(); c.stroke();
+      }
+    } else if (o.kind === 'remnant') {
+      c.fillStyle = '#0a0a0e'; c.fillRect(x, ground - h, w, h);
       c.strokeRect(x + c.lineWidth / 2, ground - h + c.lineWidth / 2, w - c.lineWidth, h - c.lineWidth);
-      c.fillStyle = '#f0f6fa'; c.fillRect(x, ground - h, w, Math.max(2, 4 * s));
-      c.fillStyle = '#27313a';
-      for (let xx = x + 22 * s; xx < x + w - 12 * s; xx += 70 * s) c.fillRect(xx, ground - h + 14 * s, 22 * s, Math.max(1, 2 * s));
+      c.fillStyle = '#f4f4f8'; c.fillRect(x + w * .34, ground - h * .68, w * .32, h * .32);
     } else if (o.kind === 'stack') {
       c.fillStyle = '#090a0c'; c.fillRect(x, ground - h, w, h);
       for (let i = 0; i < 2; i++) {
